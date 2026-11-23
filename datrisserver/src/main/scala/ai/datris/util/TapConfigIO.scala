@@ -14,6 +14,11 @@ object TapConfigIO {
         tapNames.map(name => read(tableName, name))
     }
 
+    /** Every stored tap of the current environment (the tap listing the
+      * script ownership rules read). Throws when the listing or any tap
+      * cannot be read, so a caller keeping files on failure keeps them. */
+    def listing(): Seq[TapConfig] = readAll(DatrisEnvironment.current.tapTableName).filter(_ != null)
+
     def read(tableName: String, tapName: String): TapConfig = {
         val json = NoSQLDbUtil.getItemJSON(tableName, "name", tapName, "value").orNull
         if (json != null) {
@@ -93,8 +98,13 @@ object TapConfigIO {
         )
 
         // Retention cap: prune old snapshots and GC their now-unreferenced
-        // scripts (only keys under the tap script folder).
-        TapScriptGenerator.deleteTapScripts(tapConfig.name, EntityVersionIO.prune(versionTable, tapConfig.name, env.versionCap))
+        // scripts: only this tap's own script objects that no stored tap
+        // references (the live listing is read only when one is pruned).
+        TapScriptGenerator.deleteTapScripts(
+            tapConfig.name,
+            EntityVersionIO.prune(versionTable, tapConfig.name, env.versionCap),
+            allTaps = () => listing()
+        )
 
         versioned
     }

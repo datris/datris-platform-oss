@@ -309,15 +309,25 @@ object MinioCodeStore extends TapCodeStore {
   * served from an immutable local cache; writes are commits on the
   * configured branch. Requires an enabled CodeRepoConfig. `familyOf` maps a
   * script's logical name (tap name, or CodeGen kind) to its family, which
-  * decides the repository path and the commit message. */
+  * decides the repository path and the commit message. Every repository
+  * request goes through `client`, except the branch lookups and file reads
+  * a given `branchHead` / `fileAt` answers (null: through `client`). */
 class GithubScriptStore(
     familyOf: String => ScriptFamily,
     disabledMessage: String = null,
     readEnabled: () => Option[CodeRepoConfig] = () => CodeRepoConfigIO.readEnabled(),
-    branchHead: CodeRepoConfig => String = cfg => GithubClient.branchHeadSha(cfg),
-    fileAt: (CodeRepoConfig, String, String) => Option[RepoFile] = (cfg, path, ref) => GithubClient.getFile(cfg, path, ref)
+    branchHead: CodeRepoConfig => String = null,
+    fileAt: (CodeRepoConfig, String, String) => Option[RepoFile] = null,
+    client: GithubClient = GithubClient
 ) extends CodeStore {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[GithubScriptStore])
     val storage = "github"
+
+    private def headOf(cfg: CodeRepoConfig): String =
+        if (branchHead != null) branchHead(cfg) else client.branchHeadSha(cfg)
+
+    private def readAt(cfg: CodeRepoConfig, path: String, ref: String): Option[RepoFile] =
+        if (fileAt != null) fileAt(cfg, path, ref) else client.getFile(cfg, path, ref)
 
     // Resolved at call time: the companion's messages are not initialised
     // while the companion object itself is being constructed.
@@ -336,7 +346,7 @@ class GithubScriptStore(
                 case cached @ Some(_) => cached
                 case None =>
                     try {
-                        fileAt(cfg, ref.scriptRepoPath, sha).map { file =>
+                        readAt(cfg, ref.scriptRepoPath, sha).map { file =>
                             TapScriptCache.put(cfg.repo, sha, ref.scriptRepoPath, file.content)
                             file.content
                         }
@@ -352,7 +362,7 @@ class GithubScriptStore(
             }
         } else {
             // No pin yet (pre-first-save edge) — read branch head, don't cache.
-            fileAt(cfg, ref.scriptRepoPath, cfg.branch).map(_.content)
+            readAt(cfg, ref.scriptRepoPath, cfg.branch).map(_.content)
         }
     }
 
@@ -365,15 +375,26 @@ class GithubScriptStore(
             else GithubCodeStore.scriptRepoPath(family, cfg)
         val action = if (prior != null && prior.storage == "github") "update" else "create"
         val baseSha = if (prior != null && prior.storage == "github") prior.scriptCommitSha else null
-        val commitSha = GithubClient.putFile(cfg, path, script, GithubCodeStore.commitMessage(cfg, family, action, actor), baseSha)
+        val commitSha = client.putFile(cfg, path, script, GithubCodeStore.commitMessage(cfg, family, action, actor), baseSha)
         TapScriptCache.put(cfg.repo, commitSha, path, script)
         StoredScript(storage, scriptRepoPath = path, scriptCommitSha = commitSha)
     }
 
+    /** Deletes the script's file. For a tap, only the tap's own file
+      * (`<prefix><tap>.py` under the current or a recorded earlier prefix,
+      * [[TapScriptOwnership.ownRepo]]): any other path is left in place with
+      * one INFO line naming the tap, and nothing is sent. A pipeline's
+      * CodeGen script is deleted as before. */
     override def deleteScript(ref: ScriptRef): Unit = {
         if (ref != null && ref.scriptRepoPath != null && ref.scriptRepoPath.nonEmpty) {
             val cfg = config
-            GithubClient.deleteFile(cfg, ref.scriptRepoPath, GithubCodeStore.commitMessage(cfg, familyOf(ref.name), "delete", null))
+            val family = familyOf(ref.name)
+            family match {
+                case ScriptFamily.Tap(name) if !TapScriptOwnership.ownRepo(name, ref.scriptRepoPath, TapScriptOwnership.prefixesOf(cfg)) =>
+                    logger.info("Script of tap '" + LogSafe.text(name) + "' left in place: its stored path is not the tap's own script file")
+                case _ =>
+                    client.deleteFile(cfg, ref.scriptRepoPath, GithubCodeStore.commitMessage(cfg, family, "delete", null))
+            }
         }
     }
 
@@ -383,7 +404,7 @@ class GithubScriptStore(
             val cfg = config
             val gitRef = if (ref.scriptCommitSha != null && ref.scriptCommitSha.nonEmpty) ref.scriptCommitSha else cfg.branch
             TapScriptCache.get(cfg.repo, gitRef, ref.scriptRepoPath).isDefined ||
-            fileAt(cfg, ref.scriptRepoPath, gitRef).isDefined
+            readAt(cfg, ref.scriptRepoPath, gitRef).isDefined
         }
     }
 
@@ -394,10 +415,10 @@ class GithubScriptStore(
     override def driftHead(ref: ScriptRef): Option[String] = {
         if (ref == null || ref.scriptRepoPath == null || ref.scriptRepoPath.isEmpty || ref.scriptCommitSha == null) return None
         val cfg = config
-        val headSha = branchHead(cfg)
+        val headSha = headOf(cfg)
         if (headSha == ref.scriptCommitSha) return None
-        fileAt(cfg, ref.scriptRepoPath, headSha).flatMap { head =>
-            val pinned = fileAt(cfg, ref.scriptRepoPath, ref.scriptCommitSha)
+        readAt(cfg, ref.scriptRepoPath, headSha).flatMap { head =>
+            val pinned = readAt(cfg, ref.scriptRepoPath, ref.scriptCommitSha)
             if (pinned.exists(_.blobSha == head.blobSha)) None else Some(headSha)
         }
     }
@@ -417,8 +438,8 @@ class GithubScriptStore(
     override def pullLatest(ref: ScriptRef): Option[(String, String)] = {
         if (ref == null || ref.scriptRepoPath == null || ref.scriptRepoPath.isEmpty) return None
         val cfg = config
-        val headSha = branchHead(cfg)
-        fileAt(cfg, ref.scriptRepoPath, headSha).map { file =>
+        val headSha = headOf(cfg)
+        readAt(cfg, ref.scriptRepoPath, headSha).map { file =>
             TapScriptCache.put(cfg.repo, headSha, ref.scriptRepoPath, file.content)
             (file.content, headSha)
         }
@@ -432,7 +453,8 @@ object GithubScriptStore
         null,
         () => CodeRepoConfigIO.readEnabled(),
         cfg => GithubClient.branchHeadSha(cfg),
-        (cfg, path, ref) => GithubClient.getFile(cfg, path, ref)
+        (cfg, path, ref) => GithubClient.getFile(cfg, path, ref),
+        GithubClient
     ) {
     val TapDisabledMessage: String =
         "This tap stores its script in a code repository, but no enabled repository is configured. " +
@@ -539,6 +561,9 @@ object TapScriptCache {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
     private val MaxShasPerRepo = 50
 
+    /** Most files one commit folder holds. */
+    private[util] val MaxFilesPerCommit = 200
+
     private val CommitIdPattern = java.util.regex.Pattern.compile("[0-9a-fA-F]{7,64}")
 
     private val ExtensionPattern = java.util.regex.Pattern.compile("\\.[A-Za-z0-9]{1,16}$")
@@ -598,17 +623,32 @@ object TapScriptCache {
             else None
         }
 
+    /** Writes the cache file of (`repo`, `sha`, `path`). Nothing is written
+      * when the commit folder already holds [[MaxFilesPerCommit]] files and
+      * this file is not one of them: the read then goes to the repository,
+      * as on a cold cache. */
     def put(repo: String, sha: String, path: String, content: String): Unit = {
         try {
             location(repo, sha, path).foreach { file =>
-                Files.createDirectories(file.getParent)
-                Files.write(file, content.getBytes(StandardCharsets.UTF_8))
-                prune(repo)
+                if (Files.isRegularFile(file) || filesIn(file.getParent) < MaxFilesPerCommit) {
+                    Files.createDirectories(file.getParent)
+                    Files.write(file, content.getBytes(StandardCharsets.UTF_8))
+                    prune(repo)
+                }
             }
         } catch {
             case e: Exception => logger.warn("Tap script cache write failed (non-fatal): " + e.getMessage)
         }
     }
+
+    /** The number of entries directly inside `dir` (0 when it does not exist). */
+    private def filesIn(dir: Path): Long =
+        if (!Files.isDirectory(dir)) 0L
+        else {
+            val listing = Files.list(dir)
+            try listing.count()
+            finally listing.close()
+        }
 
     /** Keep the most recently touched N sha directories per repo. */
     private def prune(repo: String): Unit = {

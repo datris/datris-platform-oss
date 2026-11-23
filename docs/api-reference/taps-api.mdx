@@ -125,7 +125,21 @@ Remedy, in order: save the tap **without** `cronExpression`; run it with `mode: 
 DELETE /api/v1/tap?name={tapName}
 ```
 
-Deletes the tap configuration and its script from MinIO. For document taps, also clears the ledger entries and deletes all staged MinIO objects for that tap.
+Deletes the tap configuration and its script. For document taps, also clears the ledger entries and deletes all staged MinIO objects for that tap.
+
+Only the tap's own script file is deleted (on built-in storage the object the platform wrote for the tap; in a [code repository](/tap-github-storage#which-file-a-tap-owns) `<path prefix><tap name>.py` under the current or a recorded earlier path prefix), and only when no other tap uses the same file. Any other file the tap points to is left in place; the tap is still deleted. The same rule applies to the script objects of the tap's earlier versions. In a code repository a file edited since the tap's recorded commit is also kept.
+
+**Response:**
+```json
+{
+  "message": "Tap deleted: stock-prices-tap",
+  "warnings": [
+    "The tap's script file was left in place because it is not a file this tap alone owns; remove it by hand if it is no longer wanted."
+  ]
+}
+```
+
+`warnings` is empty when the script file was deleted. Each kept file gives one warning: the text above for a file that is not the tap's own or is still used by another tap (also when the list of taps could not be read), or a message naming a repository file that was edited since its recorded commit, could not be checked, or whose delete could not be confirmed. Deleting a catalog with its items reports the same warnings per tap.
 
 ## Brainstorm (AI Chat)
 
@@ -316,7 +330,9 @@ Stores a (typically hand-edited) Python script and, when the tap already exists,
 
 `scriptPath` is set for built-in storage; `scriptRepoPath` and `scriptCommitSha` for the repository. Replacing an existing tap's script is a definition edit and lands as a new definition version (`GET /api/v1/tap/versions`) naming who made it; storing identical bytes is a plain write.
 
-**Errors:** **HTTP 409** when `baseCommitSha` is stale (pull the latest, reapply the edit, retry), or when the tap carries a `cronExpression` and the new bytes have not passed a `mode=test` run — the test-before-cron rule, evaluated before anything is written (see [Create or Update Tap](#create-or-update-tap)). **HTTP 500** when `tapName` or `script` is missing.
+**Errors:** **HTTP 409** when `baseCommitSha` is stale (pull the latest, reapply the edit, retry), or when the tap carries a `cronExpression` and the new bytes have not passed a `mode=test` run — the test-before-cron rule, evaluated before anything is written (see [Create or Update Tap](#create-or-update-tap)). **HTTP 409** also when the script would be written to the code repository at `<path prefix><tapName>.py` for a name with no repository script of its own yet (a new name, or a tap moving into the repository with `storage: "github"`) and another tap already runs its script from that file: nothing is written, and the other tap's script is never replaced; use another tap name. A user limited to catalogs, or a key limited to a catalog or to what it created, gets in that case the answer a refused script reference gives on save (`403` naming `tap:read` for a key, `404` for a user). A tap that already stores its script in the repository keeps storing it at its stored path. **HTTP 500** when `tapName` or `script` is missing.
+
+A tap stored in the repository whose stored path is not its own file (for example a hand-placed path, or a path under an earlier prefix that is not recorded) still stores its script at that path in this release; the server log and the [audit log](/audit-log#what-is-recorded) note it once a day, and `datris doctor` lists it under [`tap.references`](/doctor#the-checks). A later release stores such a tap's next script at its own path and points the tap at it. A script stored under a name with no saved tap by a key that holds no `tap:create` is noted the same way; a later release refuses it.
 
 ## Pull Script from Repository
 
@@ -385,7 +401,7 @@ Moves a tap's script between backends: reads it from the current backend, writes
 
 **Response:** The migrated tap configuration (same shape as [Get Tap](#get-tap), without `script`), with `scriptStorage`, `scriptPath`, `scriptRepoPath` and `scriptCommitSha` updated.
 
-**Errors:** **HTTP 400** with `{"error": ...}` for an unknown tap, an invalid `target`, or a tap whose current script cannot be read.
+**Errors:** **HTTP 400** with `{"error": ...}` for an unknown tap, an invalid `target`, or a tap whose current script cannot be read. **HTTP 409** with `{"error": ...}` for a move to `github` when another tap already runs its script from `<path prefix><tapName>.py`: nothing is written (a limited user or key gets the answer a refused script reference gives on save).
 
 ## Test Tap
 

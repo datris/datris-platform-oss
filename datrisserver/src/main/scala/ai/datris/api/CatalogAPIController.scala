@@ -306,12 +306,22 @@ class CatalogAPIController {
                         val tapController = new TapAPIController
                         val pipelineController = new PipelineAPIController
                         // deleteTapInternal's warnings (a hand-edited repository
-                        // script kept) become {tap, message} warnings.
+                        // script kept, or a script file this tap does not
+                        // alone own) become {tap, message} warnings. One tap
+                        // listing, read at most once (a failed read is kept
+                        // too, so each delete keeps its file), serves every tap
+                        // delete; taps deleted so far no longer count as using a file.
+                        val read = TapAPIController.once(() => scala.util.Try(TapConfigIO.listing()))
+                        val listing: () => Seq[TapConfig] = () => read().get
+                        val deletedTaps = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
+                        val remaining: () => Seq[TapConfig] = () => listing().filter(t => t != null && !deletedTaps.contains(t.name))
                         val t = CatalogOps.executeCollecting(members.taps.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readTap(n, name)
                                 CatalogAPIController.assertMemberWrite(request, "tap", "delete", live.catalog, live.createdByKeyLabel)
-                                tapController.deleteTapInternal(n, request, checkScope = false).getOrElse(Nil)
+                                val out = tapController.deleteTapInternal(n, request, checkScope = false, allTaps = remaining).getOrElse(Nil)
+                                deletedTaps.add(n)
+                                out
                             }
                         }
                         // A surviving tap must not be left pointing at a deleted

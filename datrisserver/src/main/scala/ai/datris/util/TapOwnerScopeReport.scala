@@ -295,34 +295,57 @@ object TapOwnerScopeReport {
       * another tap. Never marks the request as audited; never throws. */
     def referenceWouldBeRefused(request: HttpServletRequest, tapName: String, rule: Int, site: String, reason: String): Unit =
         safe("reference") {
-            if (tapName == null || tapName.isEmpty || CatalogOps.Placeholder.is(tapName)) return
-            val env = Option(ai.datris.model.DatrisEnvironment.current).map(e => String.valueOf(e.environment)).getOrElse("null")
-            if (!firstToday(ReferenceWouldBeRefusedAction + "|" + env + "|" + rule + "|" + tapName)) return
-            val label = CapabilityCheck.resolvedKey(request).map(_.label).orNull
-            logger.warn(
-                "Tap " + q(LogSafe.text(tapName)) + ": " + reason + " (" + site + " by " + q(LogSafe.text(label)) + "). " +
-                    "A later release refuses this (script reference and secret rule " + rule + ")." + ReferencesDoctor
+            reportReference(
+                request,
+                tapName,
+                rule.toString,
+                site,
+                reason,
+                "A later release refuses this (script reference and secret rule " + rule + ")." + ReferencesDoctor
             )
-            if (AuditLog.enabled) {
-                val md = new JsonObject()
-                md.addProperty("rule", rule.toString)
-                md.addProperty("site", site)
-                md.addProperty("enforced", false)
-                AuditLog.submit(
-                    AuditEntry(
-                        ts = Instant.now(),
-                        actor = AuditActor.resolve(request),
-                        category = "tap",
-                        action = ReferenceWouldBeRefusedAction,
-                        resourceType = Some("tap"),
-                        resourceName = Option(tapName),
-                        outcome = "warning",
-                        request = Option(request).map(AuditLog.requestInfo),
-                        metadata = Some(md)
-                    )
-                )
-            }
         }
+
+    /** Rules S4 and S5 of plans/stories/tap-script-store-writes-and-deletes-in-scope.md
+      * at the script upload (`site` "script"): the upload went ahead as
+      * before, and a later release changes it as `later` says (the whole
+      * closing text of the line). One WARN line
+      * and one `tap/reference-would-be-refused` audit row (metadata `rule`
+      * S4 or S5, `site`, `enforced: false`), at most once per environment,
+      * tap and rule a UTC day. `reason` names nothing of another tap. Never
+      * marks the request as audited; never throws. */
+    def scriptStoreWouldChange(request: HttpServletRequest, tapName: String, rule: String, site: String, reason: String, later: String): Unit =
+        safe("script store") {
+            reportReference(request, tapName, rule, site, reason, later)
+        }
+
+    private def reportReference(request: HttpServletRequest, tapName: String, rule: String, site: String, reason: String, later: String): Unit = {
+        if (tapName == null || tapName.isEmpty || CatalogOps.Placeholder.is(tapName)) return
+        val env = Option(ai.datris.model.DatrisEnvironment.current).map(e => String.valueOf(e.environment)).getOrElse("null")
+        if (!firstToday(ReferenceWouldBeRefusedAction + "|" + env + "|" + rule + "|" + tapName)) return
+        val label = CapabilityCheck.resolvedKey(request).map(_.label).orNull
+        logger.warn(
+            "Tap " + q(LogSafe.text(tapName)) + ": " + reason + " (" + site + " by " + q(LogSafe.text(label)) + "). " + later
+        )
+        if (AuditLog.enabled) {
+            val md = new JsonObject()
+            md.addProperty("rule", rule)
+            md.addProperty("site", site)
+            md.addProperty("enforced", false)
+            AuditLog.submit(
+                AuditEntry(
+                    ts = Instant.now(),
+                    actor = AuditActor.resolve(request),
+                    category = "tap",
+                    action = ReferenceWouldBeRefusedAction,
+                    resourceType = Some("tap"),
+                    resourceName = Option(tapName),
+                    outcome = "warning",
+                    request = Option(request).map(AuditLog.requestInfo),
+                    metadata = Some(md)
+                )
+            )
+        }
+    }
 
     /** `POST /tap/review` by an identity holding no `tap:update` (rule 4):
       * the label is recorded in [[TapReviewAccessLog]] for the current

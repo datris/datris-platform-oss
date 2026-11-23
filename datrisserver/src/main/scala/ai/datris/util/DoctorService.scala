@@ -630,7 +630,8 @@ object DoctorService {
 
     /** Taps and keys a later release holds to the tap script reference,
       * secret and review rules (plans/stories/tap-save-references-in-scope.md,
-      * rules 4-8). Report-only release: `warn` at most, never `error`; a
+      * rules 4-8), and repository taps whose script file is not their own
+      * (plans/stories/tap-script-store-writes-and-deletes-in-scope.md). Report-only release: `warn` at most, never `error`; a
       * scan that throws is a warn saying the check could not run. The detail
       * names up to [[TapReferencesCheck.PerGroup]] items per group and states
       * each group's total; the counts-only detail names none. */
@@ -669,13 +670,17 @@ object DoctorService {
                     else Some(label + " (" + in.size + "): " + TapOwnerScopeCheck.named(in.map(_.name)))
                 }
                 val also = unreadableText(names)
-                findings.size + " finding(s) that the next release refuses (nothing is refused in this release): " +
+                findings.size + " finding(s) that the next release refuses or changes (nothing is refused in this release): " +
                     groups.mkString("; ") + (if (also.isEmpty) "" else "; also " + also) + (if (names) "" else TapReferencesCheck.NamesHidden)
             }
             val fix =
-                "Script outside the tap script area: store the script again from the tap editor or through the script upload, which keeps it " +
-                    "under tap-scripts/ (or under the code repository's current path prefix), then save the tap. Script shared across catalogs or owners: give each tap its own copy by storing the " +
-                    "script again under that tap's name. Secret outside the owner's access: use a tap secret the owner may read, or recreate the " +
+                "Script outside the tap script area: on built-in storage, store the script again from the tap editor or through the script upload, " +
+                    "which writes it under tap-scripts/, then save the tap; in a code repository, move the tap's script to built-in storage and back, " +
+                    "which stores it at the tap's own path under the current path prefix. Script file not the tap's own: if the tap was stored under a " +
+                    "path prefix the code repository used before, record that earlier prefix on the code repository settings (earlierPathPrefixes); " +
+                    "otherwise move the tap's script to built-in storage and back. Script shared across catalogs or owners: give each tap its own copy, " +
+                    "on built-in storage by storing the script again under that tap's name, in a code repository by moving the tap's script to built-in " +
+                    "storage and back. Secret outside the owner's access: use a tap secret the owner may read, or recreate the " +
                     "tap as a user or key whose tap access covers the secret. Review without tap update: use a user or key that holds tap update " +
                     "on the tap (API keys cannot be edited; issue a new key)." +
                     (if (unreadable.isEmpty) "" else " " + unreadableFix)
@@ -695,6 +700,8 @@ object DoctorService {
         val Groups: Seq[(String, String)] = Seq(
             TapReferenceScan.OutsideArea ->
                 "taps whose script sits outside the tap script area; in the next release the script store reads only scripts in that area, so they will not run, test or save until the script is stored again",
+            TapReferenceScan.NotOwnScript ->
+                "taps stored in a code repository whose script file is not their own (<path prefix><tap name>.py under the current or a recorded earlier path prefix); deleting such a tap now leaves the file in place, and in the next release the tap's next script upload is stored at its own path and the earlier file is left",
             TapReferenceScan.SharedScript ->
                 "taps sharing one script across catalogs or owners; in the next release a user or key limited to a catalog or to what it created may point a tap only at its own script or the script of a tap it may read",
             TapReferenceScan.SecretOutsideOwner ->

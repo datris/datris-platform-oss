@@ -30,7 +30,8 @@ import scala.util.Try
   * path that starts with the repository's path prefix, written as
   * configured or in [[normalizedRef]] form (the prefix is the operator's
   * setting and is not judged), whose part after the prefix has no empty,
-  * `.` or `..` segment and is not under the `pipelines/` folder. Both
+  * `.` or `..` segment and is not under (or the name of) the `pipelines`
+  * folder. Both
   * store clients send a `%` in a reference escaped (`%25`), so a percent
   * sequence names a file of that literal name and is judged as written
   * ([[TapReferenceRulesSpec]] pins the encoders).
@@ -129,13 +130,13 @@ object TapReferenceRules {
 
     /** True when `p` is a repository path inside the tap script area for
       * the path prefix `prefix`: it starts with a form of the prefix
-      * ([[prefixForms]]), and the part after it has plain segments and is not
-      * under the `pipelines/` folder. */
+      * ([[prefixForms]]), and the part after it has plain segments, is not
+      * under the `pipelines/` folder and is not the folder name itself. */
     def repoInArea(p: String, prefix: String): Boolean =
         p != null && prefixForms(prefix).exists { f =>
             p.startsWith(f) && {
                 val rest = p.substring(f.length)
-                plainSegments(rest) && !rest.startsWith("pipelines/")
+                plainSegments(rest) && !rest.startsWith("pipelines/") && rest != "pipelines"
             }
         }
 

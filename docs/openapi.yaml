@@ -1323,6 +1323,17 @@ components:
           description: "Commit message template. Tokens: {name}, {action}, {user}"
         enabled:
           type: boolean
+        earlierPathPrefixes:
+          type: array
+          items:
+            type: string
+          description: >-
+            Path prefixes the repository used before `pathPrefix`. A tap stored
+            under one of them (`{prefix}{tapName}.py`) is treated exactly as one
+            under the current prefix when its script is stored or the tap is
+            deleted. A save that changes `pathPrefix` adds the previous prefix;
+            a save that leaves the field out keeps the stored list. Empty when
+            none are recorded.
 
     TapRunResult:
       type: object
@@ -5134,10 +5145,14 @@ paths:
       tags: [Taps]
       summary: Delete a tap
       description: >-
-        Deletes the tap configuration and its script. A script stored in a code
+        Deletes the tap configuration and its script. Only the tap's own script
+        file is deleted (on built-in storage the object written for the tap; in
+        a code repository `{pathPrefix}{name}.py` under the current or a
+        recorded earlier prefix), and only when no other tap uses it; any other
+        file is left in place and `warnings` says so. A script stored in a code
         repository gets a delete commit unless its file was edited there since
         the recorded commit (or the repository cannot be reached); that file is
-        kept and named in `warnings`.
+        kept and named in `warnings`. The tap is deleted in every case.
       parameters:
         - name: name
           in: query
@@ -5495,7 +5510,17 @@ paths:
                     type: string
                     nullable: true
         '409':
-          description: The script changed in the repository since `baseCommitSha` (pull the latest, reapply edits, and retry), or the tap has a `cronExpression` and the new script has not passed a `mode=test` run (test-before-cron); nothing is stored
+          description: >-
+            The script changed in the repository since `baseCommitSha` (pull the
+            latest, reapply edits, and retry), or the tap has a `cronExpression`
+            and the new script has not passed a `mode=test` run
+            (test-before-cron), or the script would be written to the code
+            repository at `{pathPrefix}{tapName}.py` for a name with no
+            repository script of its own yet and another tap already runs its
+            script from that file (use another tap name); nothing is stored. A
+            user or key limited to catalogs or to what it created gets, in the
+            last case, the answer a refused script reference gives on save (403
+            for a key, 404 for a user).
         '500':
           description: Error (including missing tapName or script)
 
@@ -5573,6 +5598,12 @@ paths:
           description: The migrated tap config
         '400':
           description: Unknown tap, unreadable script, or invalid target
+        '409':
+          description: >-
+            Move to `github` refused because another tap already runs its script
+            from `{pathPrefix}{tapName}.py`; nothing is written. A user or key
+            limited to catalogs or to what it created gets the answer a refused
+            script reference gives on save (403 for a key, 404 for a user).
         '500':
           description: Error
 
@@ -5596,7 +5627,9 @@ paths:
       description: >-
         Validates the connection when `enabled` (token can push, branch
         exists — verified via the repository `permissions` block, no probe
-        commits) and persists the configuration.
+        commits) and persists the configuration. A save that changes
+        `pathPrefix` records the previous prefix in `earlierPathPrefixes`; a
+        body without `earlierPathPrefixes` keeps the stored list.
       requestBody:
         required: true
         content:

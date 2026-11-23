@@ -94,7 +94,7 @@ Leave it at `https://api.github.com` for github.com.
 | Run a tap (manual or cron) | Nothing — the pinned commit is read from a local cache |
 | Edit the file directly in GitHub | Opening the tap loads the repository's latest version into the editor, with a banner explaining that runs keep the previously saved version until you test and save |
 | Save when the file changed externally | Rejected with a conflict message — pull the latest, reapply your edits, save again |
-| Delete the tap | A delete commit removes the file from the branch head; **git history is preserved** |
+| Delete the tap | A delete commit removes the tap's own script file (`<path prefix><tap-name>.py`) from the branch head when no other tap uses it; **git history is preserved**. Any other file is left in place with a warning (see [Which file a tap owns](#which-file-a-tap-owns)) |
 | Save a pipeline with an AI rule or AI transformation | A commit per script under `pipelines/<pipeline>/`; runs pin to it (see [Pipeline scripts](#pipeline-scripts)) |
 
 Run history records the commit SHA each run executed, so any run can be traced to the exact
@@ -111,6 +111,43 @@ The cloud action on the row moves a tap's script in either direction:
 
 Both directions are recorded as a new tap version, so the move itself is auditable and
 reversible.
+
+A move to GitHub writes the tap's own path, `<path prefix><tap-name>.py`. If another tap already
+runs its script from that file, the move is refused with `409` and nothing is written; the other
+tap's script is never replaced. The same holds for a script stored for a new tap name: pick another
+name, or move the other tap first.
+
+## Which file a tap owns
+
+A tap's script upload, a move between backends and a tap delete only ever touch the script file
+that belongs to that tap:
+
+- **Built-in storage:** the object the platform wrote for the tap (`tap-scripts/<tap-name>_<id>.py`).
+- **Code repository:** `<path prefix><tap-name>.py`, under the current path prefix or one of the
+  repository's **earlier path prefixes** (below). A file in the prefix's `pipelines/` folder is never
+  a tap's own file.
+
+**Deleting a tap** deletes its own script file only when no other tap uses the same file. Otherwise
+the file is left in place, the tap is still deleted, and the delete response's `warnings` says: "The
+tap's script file was left in place because it is not a file this tap alone owns; remove it by hand
+if it is no longer wanted." That happens for a tap pointed at a file by hand, a tap stored under a
+path prefix that is not recorded, and two taps sharing one script (deleting either one no longer
+removes the script the other still runs). Removing old script versions follows the same rule: only
+the tap's own older objects that no tap uses are removed. When the list of taps cannot be read, the
+tap is deleted and its file is kept with the same warning.
+
+**Earlier path prefixes.** Changing the **path prefix** in the settings records the previous prefix
+in the repository configuration's `earlierPathPrefixes` list, so taps already stored under it keep
+being treated as their own files. If you changed the prefix before this was recorded, add the old
+prefix to `earlierPathPrefixes` with `PUT /api/v1/code-repo` (needs `code-repo:write`; send the
+whole configuration with the list). A save that leaves the list out keeps the stored list. There is
+no field for it in the settings page.
+
+A tap whose stored script file is not its own still runs, saves and stores its script as before in
+this release. `datris doctor` lists such taps under [`tap.references`](/doctor#the-checks); in a
+later release the next script stored for such a tap is written to its own path and the tap is
+pointed at it, leaving the earlier file in place. To give such a tap its own file now, record the
+earlier prefix (if that is the cause) or move the tap's script to built-in storage and back.
 
 ## Pipeline scripts
 
@@ -198,7 +235,8 @@ can remove it by hand if it is no longer wanted. When the repository cannot be r
 kept the same way, with a warning, and the delete still goes ahead. If the delete request itself fails
 (for example it times out), the warning says the delete could not be confirmed: check the repository
 and remove the file by hand if it is still there. Deleting a tap whose script is in
-the repository follows the same rule. Saving a pipeline without an AI instruction it had before
+the repository follows the same rule, and also leaves in place a file that is not the tap's own (see
+[Which file a tap owns](#which-file-a-tap-owns)). Saving a pipeline without an AI instruction it had before
 removes that script the same way: an edited file is kept and named in the save response's `warnings`.
 
 ## Troubleshooting
@@ -211,4 +249,6 @@ removes that script the same way: an edited file is kept and named in the save r
 | Test connection: access error on an org repo | Org policy blocks fine-grained PATs, the token awaits approval, or SSO authorization is required |
 | New taps still land in built-in storage | **Enable repository storage** isn't checked and saved |
 | Scheduled runs keep working while GitHub is down | Expected — runs read the pinned commit from the local cache |
+| Tap delete warns that the script file "was left in place" | The tap's script file is not one it alone owns: another tap uses it, it was placed by hand, or it is under an unrecorded earlier path prefix (see [Which file a tap owns](#which-file-a-tap-owns)) |
+| Storing a tap's script or moving it to GitHub returns `409` saying another tap runs its script from that file | Another tap runs its script from `<path prefix><tap-name>.py`; use another tap name |
 | Pipeline save warns that a script "changed in the code repository" | The script file was edited in GitHub — pull the edit, or regenerate with `overwrite=true` (see [Pipeline scripts](#pipeline-scripts)) |

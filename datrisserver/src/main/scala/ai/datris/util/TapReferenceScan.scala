@@ -24,6 +24,12 @@ object TapReferenceScan {
       * outside the current repository tap path. */
     val OutsideArea = "outsideArea"
 
+    /** A tap stored in a code repository whose stored path is not its own
+      * file (`<prefix><tap>.py` for the current or a recorded earlier prefix,
+      * [[TapScriptOwnership.ownRepo]]): deleting it leaves the file in place,
+      * and a later release stores its next upload at its own path. */
+    val NotOwnScript = "notOwnScript"
+
     /** One script shared by taps of different catalogs or owners (rule 5). */
     val SharedScript = "sharedScript"
 
@@ -76,8 +82,9 @@ object TapReferenceScan {
       * (may throw); `secretOwner`: a secret's owner (outer None: no such
       * secret; may throw); `reviewKeys`: labels from [[TapReviewAccessLog]];
       * `repoPathPrefix`: the enabled code repository's path prefix ("" for
-      * none; may throw), read at most once and only when a tap stores its
-      * script in a repository. An owner is resolved, and a secret read, only
+      * none; may throw) and `repoEarlierPrefixes`: its recorded earlier path
+      * prefixes (may throw), each read at most once and only when a tap
+      * stores its script in a repository. An owner is resolved, and a secret read, only
       * for a tap with a secret, each distinct label and secret at most once
       * per scan; a failed lookup lists the tap under `unreadable`. Findings
       * in group order, taps in the order given. */
@@ -86,10 +93,12 @@ object TapReferenceScan {
         resolveOwner: String => TapPrincipal.Resolution,
         secretOwner: String => Option[Option[String]],
         reviewKeys: List[String],
-        repoPathPrefix: () => String = () => ""
+        repoPathPrefix: () => String = () => "",
+        repoEarlierPrefixes: () => Seq[String] = () => Nil
     ): Result = {
         val live = Option(taps).getOrElse(Nil).filter(t => t != null && t.name != null && !placeholder(t))
         val unreadable = mutable.ListBuffer[String]()
+        def markUnreadable(name: String): Unit = if (!unreadable.contains(name)) unreadable += name
 
         lazy val prefix: Try[String] = Try(Option(repoPathPrefix()).getOrElse(""))
         val outside = live.flatMap { t =>
@@ -101,10 +110,22 @@ object TapReferenceScan {
                         prefix match {
                             case Success(pre) => if (TapReferenceRules.repoInArea(p, pre)) None else Some(Finding(OutsideArea, t.name))
                             case Failure(_) =>
-                                unreadable += t.name
+                                markUnreadable(t.name)
                                 None
                         }
                 }
+        }
+
+        lazy val earlier: Try[Seq[String]] = Try(Option(repoEarlierPrefixes()).getOrElse(Nil).filter(_ != null))
+        val notOwn = live.flatMap { t =>
+            TapReferenceRules.effectiveRepo(t).flatMap { p =>
+                (for (pre <- prefix; old <- earlier) yield TapScriptOwnership.ownRepo(t.name, p, pre +: old)) match {
+                    case Success(own) => if (own) None else Some(Finding(NotOwnScript, t.name))
+                    case Failure(_) =>
+                        markUnreadable(t.name)
+                        None
+                }
+            }
         }
 
         val sharedNames: Set[String] = scriptGroups(live)
@@ -140,14 +161,14 @@ object TapReferenceScan {
                         case Success(true) => Some(Finding(SecretOutsideOwner, t.name))
                         case Success(false) => None
                         case Failure(_) =>
-                            if (!unreadable.contains(t.name)) unreadable += t.name
+                            markUnreadable(t.name)
                             None
                     }
             }
         }
 
         val review = Option(reviewKeys).getOrElse(Nil).filter(l => l != null && l.nonEmpty).distinct.map(l => Finding(ReviewWithoutUpdate, l))
-        Result(outside ++ shared ++ secretFindings ++ review, unreadable.toList)
+        Result(outside ++ notOwn ++ shared ++ secretFindings ++ review, unreadable.toList)
     }
 
     /** Scan every stored tap. Listing the taps throws (the doctor check turns
@@ -156,18 +177,20 @@ object TapReferenceScan {
       * the first `session:` owner), the API key store and its metadata
       * ([[APIKeyValidator.keyDirectory]], on the first key owner), and each
       * distinct secret of a tap whose owner's tap read is scoped, and the
-      * repository configuration (on the first tap stored in a repository). */
+      * repository configuration, once (on the first tap stored in a repository). */
     def liveScan(): Result = {
         val env = DatrisEnvironment.current
         val taps = TapConfigIO.readAll(env.tapTableName)
         lazy val users: Try[Map[String, User]] = Try(UserStore.list().filter(_ != null).map(u => UserStore.normalize(u.username) -> u).toMap)
         lazy val keys = APIKeyValidator.keyDirectory()
+        lazy val repo = Try(CodeRepoConfigIO.readEnabled())
         scan(
             taps,
             label => TapPrincipal.resolveWith(label, n => users.get.get(UserStore.normalize(n)), l => keys.byLabel(l)),
             n => TapAPIController.liveSecretOwner(n),
             TapReviewAccessLog.labels(),
-            () => TapAPIController.liveRepoPathPrefix()
+            () => repo.get.map(c => TapReferenceRules.normalizePrefix(c.pathPrefix)).getOrElse(""),
+            () => repo.get.map(TapScriptOwnership.earlierOf).getOrElse(Nil)
         )
     }
 }

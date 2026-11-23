@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException, ValidationException}
+import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException, TapConfig, ValidationException}
 import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -478,17 +478,28 @@ object TapScriptGenerator {
     }
 
     /**
-     * Delete the tap `tapName`'s script objects `paths` that are under the
-     * tap script folder (`tap-scripts/`); any other path is left in place,
-     * with one INFO line naming the tap (not the key) unless every such path
-     * is in `alreadyReported`.
+     * Delete the tap `tapName`'s script objects among `paths` (version
+     * cleanup on a tap delete, and version-cap pruning): only the tap's own
+     * script objects (`tap-scripts/<tap>_<8 hex>.py`,
+     * [[TapScriptOwnership.ownBuiltIn]]) that no stored tap currently
+     * references. `allTaps` (the tap listing) is read once, and only when
+     * some path is the tap's own; a listing that cannot be read deletes
+     * nothing. Any path left in place gives one INFO line naming the tap
+     * (not the key) unless every such path is in `alreadyReported`.
      */
-    def deleteTapScripts(tapName: String, paths: Seq[String], alreadyReported: Set[String] = Set.empty, objects: ObjectStoreUtility = null): Unit = {
+    def deleteTapScripts(
+        tapName: String,
+        paths: Seq[String],
+        alreadyReported: Set[String] = Set.empty,
+        objects: ObjectStoreUtility = null,
+        allTaps: () => Seq[TapConfig] = () => TapConfigIO.listing()
+    ): Unit = {
         val prefix = MinioCodeStore.TapPrefix
-        val (inside, outside) = Option(paths).getOrElse(Nil).filter(p => p != null && p.nonEmpty).partition(_.startsWith(prefix))
-        inside.foreach(p => deleteScriptUnder(p, prefix, objects))
-        if (outside.exists(p => !alreadyReported.contains(p)))
-            logger.info("Script of tap '" + LogSafe.text(tapName) + "' left in place: a stored reference is outside the tap script folder")
+        val all = Option(paths).getOrElse(Nil).filter(p => p != null && p.nonEmpty).distinct
+        val deletable = TapScriptOwnership.deletableBuiltIn(tapName, all, allTaps).toSet
+        all.filter(deletable.contains).foreach(p => deleteScriptUnder(p, prefix, objects))
+        if (all.exists(p => !deletable.contains(p) && !alreadyReported.contains(p)))
+            logger.info("Script of tap '" + LogSafe.text(tapName) + "' left in place: a stored reference is not a script file this tap alone owns")
     }
 
     /**

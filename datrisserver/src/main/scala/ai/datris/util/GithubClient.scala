@@ -32,20 +32,13 @@ class CodeRepoConflictException(message: String) extends RuntimeException(messag
   * are authenticated with the tenant's Vault-held token; the UI never talks
   * to GitHub directly. Provider-neutral callers go through TapCodeStore —
   * this class is the github-provider implementation detail.
+  *
+  * `send` executes one request and returns (status, body). The companion
+  * object is the live client; a spec builds a client of its own over a fake
+  * send, so nothing shared is ever replaced.
   */
-object GithubClient {
-    private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private val TimeoutMillis = 30000
-
-    private def token(config: CodeRepoConfig): String = {
-        val secretName = DatrisEnvironment.current.environment + "/" + config.authSecretName
-        SecretsRetrieverUtil.userSecret(secretName)
-            .flatMap(m => Option(m.get("token")))
-            .filter(_.nonEmpty)
-            .getOrElse(throw new DatrisException(
-                "Code repository token not found in secret '" + config.authSecretName + "' (expected a 'token' field)."
-            ))
-    }
+class GithubClient(send: (HttpUriRequest, CodeRepoConfig) => (Int, String)) {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[GithubClient])
 
     private def apiBase(config: CodeRepoConfig): String =
         Option(config.apiBaseUrl).filter(_.nonEmpty).getOrElse("https://api.github.com").stripSuffix("/")
@@ -95,31 +88,7 @@ object GithubClient {
     private def refuseChange(config: CodeRepoConfig, path: String): Unit =
         changeRefusal(config, path).foreach(m => throw new ValidationException(m))
 
-    /** Sends a request; replaced only by specs. */
-    @volatile private[util] var transport: (HttpUriRequest, CodeRepoConfig) => (Int, String) = (request, config) => send(request, config)
-
-    private def execute(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = transport(request, config)
-
-    /** Executes with auth headers; returns (status, body). */
-    private def send(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = {
-        request.setHeader("Authorization", "Bearer " + token(config))
-        request.setHeader("Accept", "application/vnd.github+json")
-        request.setHeader("X-GitHub-Api-Version", "2022-11-28")
-        val requestConfig = RequestConfig.custom()
-            .setConnectTimeout(TimeoutMillis)
-            .setSocketTimeout(TimeoutMillis)
-            .setConnectionRequestTimeout(TimeoutMillis)
-            .build()
-        val client = HttpClients.custom().setDefaultRequestConfig(requestConfig).build()
-        try {
-            val response = client.execute(request)
-            try {
-                val entity = response.getEntity
-                val body = if (entity != null) EntityUtils.toString(entity, StandardCharsets.UTF_8) else ""
-                (response.getStatusLine.getStatusCode, body)
-            } finally response.close()
-        } finally client.close()
-    }
+    private def execute(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = send(request, config)
 
     private def parse(body: String): JsonObject = JsonParser.parseString(body).getAsJsonObject
 
@@ -336,5 +305,45 @@ object GithubClient {
     private class HttpDeleteWithBody(url: String) extends HttpEntityEnclosingRequestBase {
         setURI(URI.create(url))
         override def getMethod: String = "DELETE"
+    }
+}
+
+/** The live repository client: every request is sent with the tenant's
+  * token ([[GithubLiveSend]]). */
+object GithubClient extends GithubClient(GithubLiveSend.send)
+
+/** Sends one repository request with the tenant's Vault-held token and the
+  * GitHub headers; returns (status, body). */
+private[util] object GithubLiveSend {
+    private val TimeoutMillis = 30000
+
+    private def token(config: CodeRepoConfig): String = {
+        val secretName = DatrisEnvironment.current.environment + "/" + config.authSecretName
+        SecretsRetrieverUtil.userSecret(secretName)
+            .flatMap(m => Option(m.get("token")))
+            .filter(_.nonEmpty)
+            .getOrElse(throw new DatrisException(
+                "Code repository token not found in secret '" + config.authSecretName + "' (expected a 'token' field)."
+            ))
+    }
+
+    def send(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = {
+        request.setHeader("Authorization", "Bearer " + token(config))
+        request.setHeader("Accept", "application/vnd.github+json")
+        request.setHeader("X-GitHub-Api-Version", "2022-11-28")
+        val requestConfig = RequestConfig.custom()
+            .setConnectTimeout(TimeoutMillis)
+            .setSocketTimeout(TimeoutMillis)
+            .setConnectionRequestTimeout(TimeoutMillis)
+            .build()
+        val client = HttpClients.custom().setDefaultRequestConfig(requestConfig).build()
+        try {
+            val response = client.execute(request)
+            try {
+                val entity = response.getEntity
+                val body = if (entity != null) EntityUtils.toString(entity, StandardCharsets.UTF_8) else ""
+                (response.getStatusLine.getStatusCode, body)
+            } finally response.close()
+        } finally client.close()
     }
 }
