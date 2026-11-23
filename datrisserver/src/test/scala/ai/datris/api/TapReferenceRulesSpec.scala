@@ -31,7 +31,10 @@ import scala.collection.mutable
   * (plans/stories/tap-save-references-in-scope.md), rules 3 and 5-8.
   *
   * Required behaviour:
-  *  - Rule 3 (enforced, save / test / version restore): for a limited caller
+  *  - Rule 3 (enforced on save and test; reported only on version restore,
+  *    lead ruling 2026-11-23: restoring an earlier version of one's own tap
+  *    works on v1.61.0 from the UI and the MCP restore tool, so a refusal
+  *    there moves to the follow-up story): for a limited caller
   *    (a restricted session, or a key for which `CallerVisibility.limitedTaps`
   *    holds), a new or changed script reference must sit in the tap script
   *    area (built-in: an object key under `tap-scripts/` exactly, no `..`
@@ -241,6 +244,14 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     private val Sites3 = Seq(TapReferenceRules.Save, TapReferenceRules.Test, TapReferenceRules.Restore)
 
+    /** Where rule 3 refuses in this release; at version restore it is reported only. */
+    private val EnforcedSites = Seq(TapReferenceRules.Save, TapReferenceRules.Test)
+
+    /** Rule 3 as this release has it at `site`: enforced on save and test, reported (never enforced) on restore. */
+    private def rule3At(site: String, fs: Seq[Finding]): Boolean =
+        if (EnforcedSites.contains(site)) fs.exists(f => f.rule == 3 && f.mode == Enforced)
+        else fs.exists(f => f.rule == 3 && f.mode == Reported) && enforced(fs).isEmpty
+
     // ================================================================ rule 3: the pure decision
 
     test("rule 3: a limited caller's new reference written by the tap script store for this tap passes, on save, test and restore") {
@@ -252,26 +263,31 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
-    test("rule 3: a limited caller's new reference outside the tap script area is an enforced finding, in every form the store accepts") {
+    test(
+        "rule 3: a limited caller's new reference outside the tap script area is an enforced finding on save and test, reported on restore, in every form the store accepts"
+    ) {
         for (rk <- limited; site <- Sites3; p <- outsideForms("new-tap")) {
             val fs = judge(rk, site, newTap("new-tap", p), null)
-            assert(fs.exists(f => f.rule == 3 && f.mode == Enforced), rk.label + " " + site + " '" + p + "': " + fs)
+            assert(rule3At(site, fs), rk.label + " " + site + " '" + p + "': " + fs)
         }
         for (rk <- limited; site <- Sites3; p <- outsideRepoForms("new-tap")) {
             val fs = judge(rk, site, newRepoTap("new-tap", p), null)
-            assert(fs.exists(f => f.rule == 3 && f.mode == Enforced), rk.label + " " + site + " repo '" + p + "': " + fs)
+            assert(rule3At(site, fs), rk.label + " " + site + " repo '" + p + "': " + fs)
         }
     }
 
-    test("rule 3: a limited caller's new reference equal to the current script of a tap it cannot see is an enforced finding naming nothing of that tap") {
+    test(
+        "rule 3: a limited caller's new reference equal to the current script of a tap it cannot see is an enforced finding on save and test (reported on restore) naming nothing of that tap"
+    ) {
         for (rk <- limited; site <- Sites3) {
             val fs = judge(rk, site, newTap("new-tap", hiddenScriptFor(rk)), null)
-            assert(fs.exists(f => f.rule == 3 && f.mode == Enforced), rk.label + " " + site + ": " + fs)
+            assert(rule3At(site, fs), rk.label + " " + site + ": " + fs)
+            hiddenNamesFor(rk).foreach(h => assert(!fs.exists(_.reason.contains(h)), rk.label + ": " + fs))
         }
         // the repository form of a hidden tap's script
         for (rk <- Seq(rita, salesKey); site <- Sites3) {
             val fs = judge(rk, site, newRepoTap("new-tap", financeRepoTap.scriptRepoPath), null)
-            assert(fs.exists(f => f.rule == 3 && f.mode == Enforced), rk.label + " " + site + " repo: " + fs)
+            assert(rule3At(site, fs), rk.label + " " + site + " repo: " + fs)
         }
     }
 
@@ -557,17 +573,20 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
             store.io
         )
 
-    test("rule 3 at version restore: a limited caller restoring a version whose reference is outside the area is refused, nothing written") {
-        for (rk <- Seq(rita, salesKey)) {
-            val s = new Store()
-            val out = restore(rk, s, "uploads/legacy/old.py", salesTap)
-            assert(out.isLeft, rk.label + ": " + out)
-            assertRefusal(rk, "sales-tap", out.left.get, Seq("finance-secret-tap", "Finance"))
-            s.nothingDone()
-            val s2 = new Store()
-            val hidden = restore(rk, s2, financeTap.scriptPath, salesTap)
-            assert(hidden.isLeft, rk.label + ": " + hidden)
-            s2.nothingDone()
+    test(
+        "rule 3 at version restore (reported only in this release): a limited caller's version outside the area, or on a hidden tap's script, is restored exactly as on v1.61.0, with the report"
+    ) {
+        for (rk <- Seq(rita, salesKey); snapPath <- Seq("uploads/legacy/old.py", financeTap.scriptPath)) {
+            // a tap name of its own, so the once-a-day bound of an earlier case does not hide this report
+            val live = salesTap.copy(name = "restore-" + System.nanoTime())
+            val s = new Store(allTaps :+ live)
+            val (out, warns) = withWarns(restore(rk, s, snapPath, live))
+            assert(out.isRight, rk.label + " '" + snapPath + "': " + out)
+            assert(s.writes.size == 1 && s.writes.head.scriptPath == snapPath, rk.label + ": " + s.writes)
+            assert(warns.exists(_.contains(live.name)), warns.mkString("\n"))
+            val rule3 = rowsFor(live.name).filter(_.metadata.exists(md => md.get("rule").getAsString == "3"))
+            assert(rule3.size == 1, rowsFor(live.name).toString)
+            assert(rule3.head.action == "reference-would-be-refused" && !rule3.head.metadata.get.get("enforced").getAsBoolean, rule3.head.toString)
         }
     }
 

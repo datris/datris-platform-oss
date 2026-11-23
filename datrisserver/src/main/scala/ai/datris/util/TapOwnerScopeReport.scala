@@ -249,6 +249,68 @@ object TapOwnerScopeReport {
                 )
         }
 
+    // ------------------------------------------------------------ script references, secrets and review
+    // plans/stories/tap-save-references-in-scope.md, rules 3 (at version restore) and 4-8.
+
+    val ReferenceWouldBeRefusedAction = "reference-would-be-refused"
+
+    private val ReferencesDoctor =
+        " Nothing is refused in this release; `datris doctor` lists such taps and keys under tap.references (reported once a day)."
+
+    /** A script reference or secret rule that a later release enforces would
+      * refuse this `site` (save, test, restore, run, generate) of `tapName`
+      * for the request's caller: one WARN line and one
+      * `tap/reference-would-be-refused` audit row (outcome `warning`,
+      * metadata `rule`, `site`, `enforced: false`), at most once per tap and
+      * rule a UTC day. `reason` names nothing of another tap. Never marks
+      * the request as audited; never throws. */
+    def referenceWouldBeRefused(request: HttpServletRequest, tapName: String, rule: Int, site: String, reason: String): Unit =
+        safe("reference") {
+            if (tapName == null || tapName.isEmpty || CatalogOps.Placeholder.is(tapName)) return
+            if (!firstToday(ReferenceWouldBeRefusedAction + "|" + rule + "|" + tapName)) return
+            val label = CapabilityCheck.resolvedKey(request).map(_.label).orNull
+            logger.warn(
+                "Tap " + q(tapName) + ": " + reason + " (" + site + " by " + q(String.valueOf(label)) + "). " +
+                    "A later release refuses this (script reference and secret rule " + rule + ")." + ReferencesDoctor
+            )
+            if (AuditLog.enabled) {
+                val md = new JsonObject()
+                md.addProperty("rule", rule.toString)
+                md.addProperty("site", site)
+                md.addProperty("enforced", false)
+                AuditLog.submit(
+                    AuditEntry(
+                        ts = Instant.now(),
+                        actor = AuditActor.resolve(request),
+                        category = "tap",
+                        action = ReferenceWouldBeRefusedAction,
+                        resourceType = Some("tap"),
+                        resourceName = Option(tapName),
+                        outcome = "warning",
+                        request = Option(request).map(AuditLog.requestInfo),
+                        metadata = Some(md)
+                    )
+                )
+            }
+        }
+
+    /** `POST /tap/review` by an identity holding no `tap:update` (rule 4):
+      * the label is recorded in [[TapReviewAccessLog]] and one WARN line is
+      * written at most once per label and tap a UTC day. `tapName` may be
+      * null (a review naming no tap). Never throws. */
+    def reviewWithoutUpdate(request: HttpServletRequest, tapName: String): Unit =
+        safe("review") {
+            val label = CapabilityCheck.resolvedKey(request).map(_.label).orNull
+            if (label == null) return
+            TapReviewAccessLog.record(label)
+            val tap = Option(tapName).filter(_.trim.nonEmpty).getOrElse("(no tap named)")
+            if (firstToday("review-without-update|" + label + "|" + tap))
+                logger.warn(
+                    "Tap review of " + q(tap) + " by " + q(label) + ", which holds no tap update. A later release requires tap update " +
+                        "for review; use a user or key that may update the tap." + ReferencesDoctor
+                )
+        }
+
     // ------------------------------------------------------------ rule 6: script upload
 
     /** After `POST /tap/script` stored a script for the stored `tap`: when

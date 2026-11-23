@@ -5080,6 +5080,16 @@ paths:
         user's grants answers the pipeline 404 (`{"error": "Pipeline: <name> is
         not configured in the NoSQL database"}`); one the user can view but
         not run is 403.
+
+        Script references: for a user limited to catalogs, or an API key limited
+        to a catalog or to what it created, a new or changed `scriptPath` or
+        `scriptRepoPath` must be a tap script (an object under `tap-scripts/`, or
+        a file under the code repository's path prefix outside its `pipelines/`
+        folder, with no `..` step) and must not be the current script of a tap
+        the caller cannot see. Otherwise the save is refused before anything is
+        read or written: 404 `{"error":"Tap: <name> not found"}` for such a user,
+        403 naming `tap:read` for a key. A reference left as stored, or left
+        out, is never refused.
       parameters:
         - name: changeNote
           in: query
@@ -5104,6 +5114,16 @@ paths:
           description: >-
             Validation error, including a malformed `cronExpression`. Body is
             `{"error": "<tap name + the 6-field Quartz form to resend>"}`.
+        '403':
+          description: >-
+            An API key's scope refuses the tap, its target pipeline, or (for a key
+            limited to a catalog or to what it created) its new script reference.
+            Shared capability-denied body naming the capability, never the item.
+        '404':
+          description: >-
+            A restricted user's tap, catalog or script reference outside its
+            grants: `{"error":"Tap: <name> not found"}` (a target pipeline outside
+            the grants answers the pipeline 404).
         '409':
           description: >-
             Cron set on an untested script (test-before-cron). Body is
@@ -5262,7 +5282,10 @@ paths:
                   type: string
                 tapName:
                   type: string
-                  description: Defaults to `tap-<epoch millis>` when omitted
+                  description: >-
+                    The tap the script is for. A stored tap of this name is pointed at the
+                    new script when the caller may update it. Missing or blank: no stored tap
+                    is read or changed (the script is named `tap-<epoch millis>` when missing).
                 oldScriptPath:
                   type: string
                   description: Path of a previous script to delete after the new one is written
@@ -5303,7 +5326,14 @@ paths:
                     description: Model that generated the script
                   error:
                     type: string
-                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+                    description: >-
+                      Present when the stored tap was not pointed at the new script: the tap
+                      is scheduled and the test-before-cron gate refused to repoint it at the
+                      new, untested script (the stored tap keeps its tested script until the
+                      new one passes a `mode=test` run), or the caller may read the tap but
+                      not update it (`The stored tap was left unchanged: this caller may not
+                      update it`; the tap, its versions and its test state are unchanged).
+                      The script and `scriptPath` are still returned with 200 either way.
         '400':
           description: 'The named `secretName` may not be used by a tap (a server-managed or unsafe secret name, or a secret not tagged `_type=tap` while tap-secret scoping is enforced). Body: `{"error": ...}`'
         '500':
@@ -5395,7 +5425,14 @@ paths:
                     type: string
                   error:
                     type: string
-                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+                    description: >-
+                      Present when the stored tap was not pointed at the new script: the tap
+                      is scheduled and the test-before-cron gate refused to repoint it at the
+                      new, untested script (the stored tap keeps its tested script until the
+                      new one passes a `mode=test` run), or the caller may read the tap but
+                      not update it (`The stored tap was left unchanged: this caller may not
+                      update it`; the tap, its versions and its test state are unchanged).
+                      The script and `scriptPath` are still returned with 200 either way.
         '500':
           description: Error
 
@@ -5614,8 +5651,13 @@ paths:
       description: >-
         Uses AI to review a script after a successful test run — correctness,
         robustness, and adherence to tap conventions. May return the script
-        rewritten. When it rewrites and the tap already exists, the tap's
-        `scriptPath` is updated to the new object.
+        rewritten. When it rewrites, the request names the tap (`tapName` present
+        and not blank) and the caller may update that tap (`tap:update` or
+        `tap:create` on it), the tap's `scriptPath` is updated to the new object;
+        a caller that may only read the tap gets the same answer with `error`
+        saying the stored tap was left unchanged. A request with no `tapName`
+        changes no stored tap. This release needs only `tap:read`; a later release
+        requires `tap:update` for review.
       requestBody:
         required: true
         content:
@@ -5670,7 +5712,14 @@ paths:
                     description: True when the AI produced a modified script
                   error:
                     type: string
-                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+                    description: >-
+                      Present when the stored tap was not pointed at the new script: the tap
+                      is scheduled and the test-before-cron gate refused to repoint it at the
+                      new, untested script (the stored tap keeps its tested script until the
+                      new one passes a `mode=test` run), or the caller may read the tap but
+                      not update it (`The stored tap was left unchanged: this caller may not
+                      update it`; the tap, its versions and its test state are unchanged).
+                      The script and `scriptPath` are still returned with 200 either way.
         '500':
           description: Error (including missing script)
 
@@ -5681,7 +5730,9 @@ paths:
       description: >-
         Uses AI to optimize a working script for speed and efficiency (based on
         the latest run's record count and duration). Always stores the returned
-        script; if the tap already exists, its `scriptPath` is updated.
+        script; when the request names an existing tap and the caller may update
+        it, its `scriptPath` is updated (otherwise `error` says the stored tap was
+        left unchanged). A request with no `tapName` changes no stored tap.
       requestBody:
         required: true
         content:
@@ -5728,7 +5779,14 @@ paths:
                       type: string
                   error:
                     type: string
-                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+                    description: >-
+                      Present when the stored tap was not pointed at the new script: the tap
+                      is scheduled and the test-before-cron gate refused to repoint it at the
+                      new, untested script (the stored tap keeps its tested script until the
+                      new one passes a `mode=test` run), or the caller may read the tap but
+                      not update it (`The stored tap was left unchanged: this caller may not
+                      update it`; the tap, its versions and its test state are unchanged).
+                      The script and `scriptPath` are still returned with 200 either way.
         '500':
           description: Error (including missing script)
 
@@ -5740,6 +5798,12 @@ paths:
         Executes the tap script without sending data to a pipeline. Returns a preview of the
         records (the first `testLimit` of a record list, up to 500, or the first 20 when
         `testLimit` is absent or 0, with `recordsTruncated: true` when there were more), logs, and an AI-generated diagnosis if errors or zero records are detected.
+
+        For a user limited to catalogs, or an API key limited to a catalog or to what
+        it created, a new or changed script reference follows the save's rule (see
+        `POST /api/v1/tap`): one outside the tap script area, or the current script of
+        a tap the caller cannot see, is refused before anything runs with the save's
+        answer (404 for such a user, 403 naming `tap:read` for a key).
       parameters:
         - name: testLimit
           in: query
@@ -5783,6 +5847,17 @@ paths:
                     type: string
                   aiExplanation:
                     type: string
+        '403':
+          description: >-
+            An API key whose tap read is scoped tests under the name of a tap it may
+            not read, with a secret its tap read does not cover, or (for a key limited
+            to a catalog or to what it created) with a new script reference outside
+            the tap script area or to the current script of a tap it cannot see.
+            Shared capability-denied body naming `tap:read`, never the item.
+        '404':
+          description: >-
+            The same cases for a restricted user: `{"error":"Tap: <name> not found"}`
+            naming the tap being tested.
 
   /api/v1/tap/run:
     post:

@@ -174,6 +174,12 @@ object DoctorService {
           * Throws when it cannot run. The default has nothing to report. */
         def tapOwnerScopeScan(): TapOwnerScopeScan.Result = TapOwnerScopeScan.Result.empty
 
+        /** The tap script reference, secret and review scan
+          * ([[TapReferenceScan.liveScan]]): taps and keys a later release
+          * holds to those rules. Throws when it cannot run. The default has
+          * nothing to report. */
+        def tapReferenceScan(): TapReferenceScan.Result = TapReferenceScan.Result.empty
+
         /** True when any source field in any pipeline carries `protect`.
           * Throws when the pipeline configs cannot be read. */
         def anyPipelineProtects(): Boolean
@@ -620,6 +626,82 @@ object DoctorService {
 
         private[util] def named(items: List[String]): String =
             items.take(PerGroup).mkString(", ") + (if (items.size > PerGroup) " and " + (items.size - PerGroup) + " more" else "")
+    }
+
+    /** Taps and keys a later release holds to the tap script reference,
+      * secret and review rules (plans/stories/tap-save-references-in-scope.md,
+      * rules 4-8). Report-only release: `warn` at most, never `error`; a
+      * scan that throws is a warn saying the check could not run. The detail
+      * names up to [[TapReferencesCheck.PerGroup]] items per group and states
+      * each group's total; the counts-only detail names none. */
+    class TapReferencesCheck(probes: Probes) extends Check {
+        val id = "tap.references"
+        val startupSafe = true
+
+        private val unreadableFix =
+            "Check that MongoDB and Vault are reachable and the server can read the users, the API key metadata and the tap secrets, then rerun doctor."
+
+        def run(): CheckResult = {
+            val result =
+                try probes.tapReferenceScan()
+                catch {
+                    case e: Exception =>
+                        return warn("could not check tap script references, secrets and review use: " + e.getMessage, unreadableFix)
+                }
+            val findings = Option(result).map(_.findings).getOrElse(Nil)
+            val unreadable = Option(result).map(_.unreadable).getOrElse(Nil)
+            if (findings.isEmpty && unreadable.isEmpty)
+                return ok("no tap script reference, tap secret or review use that a later release refuses")
+            def unreadableText(names: Boolean) =
+                if (unreadable.isEmpty) ""
+                else
+                    "could not check " + unreadable.size + " tap(s) (an owner or secret read failed)" +
+                        (if (names) ": " + TapOwnerScopeCheck.named(unreadable) else "")
+            if (findings.isEmpty)
+                return warn(unreadableText(names = true), unreadableFix).copy(namelessDetail = unreadableText(names = false) + TapReferencesCheck.NamesHidden)
+            def detail(names: Boolean): String = {
+                val groups = TapReferencesCheck.Groups.flatMap { case (group, what) =>
+                    val in = findings.filter(_.group == group)
+                    val label =
+                        if (group == TapReferenceScan.ReviewWithoutUpdate) what + " (recorded since " + TapReviewAccessLog.since + ")" else what
+                    if (in.isEmpty) None
+                    else if (!names) Some(label + " (" + in.size + ")")
+                    else Some(label + " (" + in.size + "): " + TapOwnerScopeCheck.named(in.map(_.name)))
+                }
+                val also = unreadableText(names)
+                findings.size + " finding(s) that the next release refuses (nothing is refused in this release): " +
+                    groups.mkString("; ") + (if (also.isEmpty) "" else "; also " + also) + (if (names) "" else TapReferencesCheck.NamesHidden)
+            }
+            val fix =
+                "Script outside the tap script area: store the script again from the tap editor or through the script upload, which keeps it " +
+                    "under tap-scripts/, then save the tap. Script shared across catalogs or owners: give each tap its own copy by storing the " +
+                    "script again under that tap's name. Secret outside the owner's access: use a tap secret the owner may read, or recreate the " +
+                    "tap as a user or key whose tap access covers the secret. Review without tap update: use a user or key that holds tap update " +
+                    "on the tap (API keys cannot be edited; issue a new key)." +
+                    (if (unreadable.isEmpty) "" else " " + unreadableFix)
+            warn(detail(names = true), fix).copy(namelessDetail = detail(names = false))
+        }
+    }
+
+    object TapReferencesCheck {
+
+        /** Items named per group before "and N more". */
+        val PerGroup: Int = TapOwnerScopeCheck.PerGroup
+
+        /** Ends the counts-only detail shown to a caller that does not see the whole installation. */
+        val NamesHidden = " (tap and key names are shown only to a caller with access to the whole installation)"
+
+        /** Report order, with what stops for each group in the next release. */
+        val Groups: Seq[(String, String)] = Seq(
+            TapReferenceScan.OutsideArea ->
+                "taps whose script sits outside the tap script area; in the next release the script store reads only scripts in that area, so they will not run, test or save until the script is stored again",
+            TapReferenceScan.SharedScript ->
+                "taps sharing one script across catalogs or owners; in the next release a user or key limited to a catalog or to what it created may point a tap only at its own script or the script of a tap it may read",
+            TapReferenceScan.SecretOutsideOwner ->
+                "taps whose owner is limited and whose secret the owner's tap access does not cover; in the next release a save, generate or run of such a tap by a limited user or key with that secret is refused",
+            TapReferenceScan.ReviewWithoutUpdate ->
+                "users and keys that used tap review without tap update; in the next release review needs tap update"
+        )
     }
 
     /** (label, raw capability strings) for each entry of an
@@ -1122,6 +1204,7 @@ object DoctorService {
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
             new TapOwnerScopeCheck(probes),
+            new TapReferencesCheck(probes),
             new KeyInertScopesCheck(probes),
             new CodeGenIsolationCheck(probes, startup),
             new RunnerConcurrencyCheck(probes),
@@ -1318,6 +1401,24 @@ object DoctorService {
                 () => {
                     ai.datris.model.TenantContext.set(env)
                     try TapOwnerScopeScan.liveScan()
+                    finally ai.datris.model.TenantContext.clear()
+                }
+            )
+        }
+
+        private val tapReferenceScanRun = new SharedRun[TapReferenceScan.Result]("doctor-tap-reference-scan", TapOwnerScanTimeoutMs)
+
+        /** [[TapReferenceScan.liveScan]] through [[SharedRun]], bounded like
+          * [[tapOwnerScopeScan]]: one scan per environment at a time, every
+          * caller waiting at most [[TapOwnerScanTimeoutMs]]; past that the
+          * check says it could not check. */
+        override def tapReferenceScan(): TapReferenceScan.Result = {
+            val env = DatrisEnvironment.current
+            tapReferenceScanRun.get(
+                String.valueOf(env.environment),
+                () => {
+                    ai.datris.model.TenantContext.set(env)
+                    try TapReferenceScan.liveScan()
                     finally ai.datris.model.TenantContext.clear()
                 }
             )
