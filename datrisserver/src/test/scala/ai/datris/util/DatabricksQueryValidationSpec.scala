@@ -135,4 +135,22 @@ class DatabricksQueryValidationSpec extends AnyFunSuite {
         validate("SELECT identifier_type, identifier FROM t")
         assert(QuerySafetyReflect.stringList(DatabricksQueryUtil, "BLOCKED_FUNCTIONS").map(_.toLowerCase(Locale.ROOT)).contains("identifier"))
     }
+
+    // ---- review round 2: Unicode spaces and case ----
+
+    test("a Unicode space or control character before the parenthesis does not hide a call") {
+        Seq("\u00A0", "\u3000", "\u2003", "\u1680", "\u202F", "\u0001", "\u200B").foreach { gap =>
+            refusedNaming("SELECT secret" + gap + "('scope', 'key')", "secret")
+            refusedNaming("SELECT http_request" + gap + "(conn => 'c')", "http_request")
+            refusedNaming("SELECT ai_query`" + gap + "('e', 'p')", "ai_query")
+        }
+    }
+
+    test("a letter that only Unicode case rules fold to ASCII does not hide a name") {
+        refusedNaming("SELECT * FROM read_\u212Aafka(subscribe => 't')", "read_kafka")
+        refusedNaming("SELECT read_\u212Ainesis(streamName => 's')", "read_kinesis")
+        refusedNaming("SELECT ai_mas\u212A(txt, ARRAY('email'))", "ai_mask")
+        refusedNaming("SELECT ai_qu\u00E9ry(txt)", "ai_qu\u00E9ry")
+        validate("SELECT secret_id, get(arr, 0) FROM main.default.ai_results")
+    }
 }

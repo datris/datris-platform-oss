@@ -158,7 +158,12 @@ object SqlServerQueryUtil {
       * on success and on failure, so anything transactional a statement did is
       * undone; never commits. The statement runs under [[timeoutSeconds]]
       * whatever the limit. On success a failed rollback is raised (the undo
-      * cannot be confirmed); after a failure it is attached to that failure. */
+      * cannot be confirmed); after a failure it is attached to that failure.
+      * Autocommit is deliberately not turned back on: doing so with a
+      * transaction still open (a rollback that failed) would commit it. The
+      * connection is closed by `withConnection` straight after, and the
+      * wrapper-error retry calls `run` again, which turns autocommit off
+      * itself. */
     private[util] def run(conn: java.sql.Connection, sql: String, unlimited: Boolean, effectiveLimit: Int): SqlServerQueryResult = {
         conn.setAutoCommit(false)
         var failure: Throwable = null
@@ -196,7 +201,6 @@ object SqlServerQueryUtil {
                     if (failure != null) failure.addSuppressed(e)
                     else throw e
             }
-            Try(conn.setAutoCommit(true))
         }
     }
 
@@ -289,8 +293,11 @@ object SqlServerQueryUtil {
         var prevPrev: Token = Other
         def note(t: Token): Unit = { prevPrev = prev; prev = t }
         def afterSetOperator: Boolean = (prev, prevPrev) match {
-            case (Word(p, _, _), _) if SetOperators.contains(p.toUpperCase(Locale.ROOT)) => true
-            case (Word(all, _, _), Word(union, _, _)) => all.equalsIgnoreCase("ALL") && union.equalsIgnoreCase("UNION")
+            // Matched in ASCII only: this is what lets a SELECT through, so a
+            // letter that only Unicode case rules fold to the keyword's (such
+            // as a dotless i) must not count as the keyword.
+            case (Word(p, _, _), _) if SetOperators.contains(asciiUpper(p)) => true
+            case (Word(all, _, _), Word(union, _, _)) => asciiUpper(all) == "ALL" && asciiUpper(union) == "UNION"
             case _ => false
         }
     }
@@ -387,7 +394,7 @@ object SqlServerQueryUtil {
                 while (i < n && isWordChar(sql.charAt(i))) i += 1
                 out += Word(sql.substring(start, i), start, depth)
             } else {
-                if (!c.isWhitespace) out += Other
+                if (!isSeparator(c)) out += Other
                 i += 1
             }
         }
@@ -397,6 +404,23 @@ object SqlServerQueryUtil {
 
     private def startsWithWord(upper: String, word: String): Boolean =
         upper.startsWith(word) && (upper.length == word.length || !isWordChar(upper.charAt(word.length)))
+
+    /** Characters the scan treats as whitespace between tokens: space and
+      * every control character (SQL Server reads 0x01-0x20 as whitespace),
+      * Unicode space, line and paragraph separators, and format characters
+      * (zero-width space and the like). Wider than SQL Server's set errs
+      * toward refusing: it can join words into a refused phrase. Where it
+      * instead lets a set operator stand right before a SELECT, a character
+      * the store does not read as whitespace should leave text it rejects
+      * (reasoned, not checked against a server). */
+    private def isSeparator(c: Char): Boolean =
+        c <= ' ' || Character.isSpaceChar(c) || Character.isWhitespace(c) ||
+            Character.getType(c) == Character.CONTROL || Character.getType(c) == Character.FORMAT
+
+    /** `w` in upper case when it is plain ASCII; otherwise unchanged, so it
+      * never equals an ASCII keyword. */
+    private def asciiUpper(w: String): String =
+        if (w.forall(_ < 128)) w.toUpperCase(Locale.ROOT) else w
 
     private def isHexDigit(c: Char): Boolean = c.isDigit || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 

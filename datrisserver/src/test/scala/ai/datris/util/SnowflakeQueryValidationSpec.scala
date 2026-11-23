@@ -135,4 +135,24 @@ class SnowflakeQueryValidationSpec extends AnyFunSuite {
         // a column whose name only contains the word is not the call
         validate("SELECT identifier_type, getnextval_count FROM t")
     }
+
+    // ---- review round 2: Unicode spaces and case ----
+
+    test("a Unicode space, control character or line separator before the parenthesis does not hide an IDENTIFIER call") {
+        Seq("\u00A0", "\u3000", "\u2003", "\u0001", "\u200B", "//x\u2028", "//x\u2029", "//x\u0085", "// a\u000B").foreach { gap =>
+            val sql = "SELECT IDENTIFIER" + gap + "('t')"
+            val e = intercept[DatrisException](validate(sql))
+            assert(e.getMessage == "Query contains blocked function: IDENTIFIER", sql + " -> " + e.getMessage)
+        }
+    }
+
+    test("a letter that only Unicode case rules fold to ASCII does not hide a name") {
+        refusedNaming("SELECT \u017FYSTEM$WAIT(1)", "SYSTEM$WAIT")
+        refusedNaming("SELECT \u0131dentifier('t')", "IDENTIFIER")
+        refusedNaming("SELECT \u017Fystem$wait(1)", "SYSTEM$WAIT")
+        // an allowlisted name with more letters after it is not the allowlisted one
+        refusedNaming("SELECT SYSTEM$TYPEOF\u00E9(1)", "SYSTEM$TYPEOF")
+        refusedNaming("SELECT SYSTEM$TYPEOF\u017F(1)", "SYSTEM$TYPEOFS")
+        validate("SELECT SYSTEM$TYPEOF(a), system_status FROM t WHERE u = 'https://example.com/x'")
+    }
 }

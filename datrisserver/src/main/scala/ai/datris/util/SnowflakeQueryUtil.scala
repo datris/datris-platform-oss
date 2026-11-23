@@ -92,7 +92,7 @@ object SnowflakeQueryUtil {
       * executed, and no other SYSTEM$ name was reviewed one by one (they are
       * refused as a class). */
     private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
-        "SYSTEM\\$[\\w$]+",
+        "SYSTEM\\$[\\p{L}\\p{N}_$]+",
         "NEXTVAL",
         "GETNEXTVAL",
         "IDENTIFIER"
@@ -105,24 +105,35 @@ object SnowflakeQueryUtil {
         "SYSTEM$CLUSTERING_DEPTH"
     )
 
-    // Between a called name and its `(`: whitespace and `//` line comments
-    // (to the end of the line, or of the text), in any mix. Possessive, so a
-    // line of repeated `//` cannot make the match backtrack, and a `(` inside
-    // a comment is not taken for the call's.
-    private val GapBeforeParen = "(?:\\s|//[^\\r\\n]*+)*+"
+    // Between a called name and its `(`: whitespace and `//` line comments, in
+    // any mix. Whitespace is taken widely (ASCII, Unicode separators, control
+    // and format characters) and a comment ends at the first control
+    // character or line or paragraph separator: where this differs from the
+    // store, it errs toward seeing a call. Possessive, so a line of repeated
+    // `//` cannot make the match backtrack, and a `(` inside a comment is not
+    // taken for the call's.
+    private val GapBeforeParen = "(?:[\\s\\p{Z}\\p{Cc}\\p{Cf}]|//[^\\p{Cc}\\p{Zl}\\p{Zp}]*+)*+"
 
     // BLOCKED_FUNCTIONS entries refused only as calls rather than as whole words.
     private val CallOnlyFunctions = Set("IDENTIFIER")
 
     private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] = BLOCKED_FUNCTIONS.map { fn =>
+        // The SYSTEM$ entry takes Unicode letters and digits into the name,
+        // so an allowlisted name with more after it is not the allowlisted
+        // one. The boundaries stay ASCII: a non-ASCII neighbour then counts
+        // as a boundary, which errs toward refusing.
+        val tail = if (fn.startsWith("SYSTEM")) "(?![\\p{L}\\p{N}_$])" else "(?![\\w$])"
         if (CallOnlyFunctions.contains(fn)) ("(?i)(?<![\\w$])\"?(" + fn + ")\"?" + GapBeforeParen + "\\(").r
-        else ("(?i)(?<![\\w$])(" + fn + ")(?![\\w$])").r
+        else ("(?i)(?<![\\w$])(" + fn + ")" + tail).r
     }
 
-    /** The first [[BLOCKED_FUNCTIONS]] name `sql` uses, in upper case. */
+    /** The first [[BLOCKED_FUNCTIONS]] name `sql` uses, in upper case. The
+      * text is searched as written and upper-cased with Unicode rules, so a
+      * letter that only those rules fold to an ASCII one (a long s, a dotless
+      * i) does not hide a name; `(?i)` alone folds ASCII only. */
     private[util] def blockedFunction(sql: String): Option[String] =
-        BlockedFunctionPatterns.iterator
-            .flatMap(_.findAllMatchIn(sql).map(_.group(1).toUpperCase(java.util.Locale.ROOT)))
+        Iterator(sql, sql.toUpperCase(java.util.Locale.ROOT))
+            .flatMap(text => BlockedFunctionPatterns.iterator.flatMap(_.findAllMatchIn(text).map(_.group(1).toUpperCase(java.util.Locale.ROOT))))
             .find(name => !SYSTEM_FUNCTION_ALLOWLIST.contains(name))
 
     case class SnowflakeQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])

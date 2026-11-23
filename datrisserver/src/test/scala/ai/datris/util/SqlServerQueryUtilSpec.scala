@@ -525,4 +525,38 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
             "SELECT id FROM t ORDER BY id OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY"
         ).foreach(accepted)
     }
+
+    // ---- review round 2: separators the store reads as whitespace, Unicode case ----
+
+    test("a control or Unicode space character between the words of a refused phrase does not hide it") {
+        Seq("\u0001", "\u001B", "\u0008", "\u00A0", "\u3000", "\u200B").foreach { sep =>
+            Seq("SELECT NEXT" + sep + "VALUE FOR dbo.s", "SELECT NEXT VALUE" + sep + "FOR dbo.s").foreach { sql =>
+                val msg = refusal(sql)
+                assert(msg == "Query contains blocked keyword: NEXT VALUE FOR", sql + " -> " + msg)
+                assert(problem(sql).isDefined, sql)
+            }
+        }
+        // the same separators between ordinary words still read
+        accepted("SELECT a,\u00A0b FROM\u0001t WHERE c\u3000= 1")
+    }
+
+    test("a set operator spelled with a letter only Unicode case rules fold to ASCII does not let a second SELECT through") {
+        Seq(
+            "SELECT a FROM t UN\u0131ON SELECT 2",
+            "SELECT a FROM t UNION \u0251LL SELECT 2",
+            "SELECT a FROM t INTER\u017FECT SELECT 2",
+            "SELECT a FROM t \u0435XCEPT SELECT 2"
+        ).foreach { sql =>
+            assert(refusal(sql) == "Only one statement is allowed in a query", sql)
+        }
+    }
+
+    test("run does not turn autocommit back on after its rollback") {
+        val r = new Recorder()
+        run(r.conn, "SELECT v FROM t", unlimited = true, limit = -1)
+        assert(!r.calls.contains("setAutoCommit:true"), r.calls)
+        val f = new Recorder(failOn = Set("execute"))
+        intercept[java.sql.SQLException](run(f.conn, "SELECT v FROM t", unlimited = false, limit = 10))
+        assert(!f.calls.contains("setAutoCommit:true"), f.calls)
+    }
 }

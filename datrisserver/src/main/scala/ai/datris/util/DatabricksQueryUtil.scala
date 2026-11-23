@@ -101,7 +101,7 @@ object DatabricksQueryUtil {
     private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
         "http_request",
         "remote_query",
-        "ai_\\w+",
+        "ai_[\\p{L}\\p{N}_]+",
         "vector_search",
         "secret",
         "try_secret",
@@ -116,14 +116,24 @@ object DatabricksQueryUtil {
         "identifier"
     )
 
-    private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] =
-        BLOCKED_FUNCTIONS.map(fn => ("(?i)(?<!\\w)`?(" + fn + ")`?\\s*\\(").r)
+    // Between a called name and its `(`: whitespace taken widely (ASCII,
+    // Unicode separators, control and format characters; the Spark lexer
+    // hides Unicode space separators too). Wider than the store errs toward
+    // seeing a call. The boundary in front stays ASCII, so a non-ASCII
+    // neighbour counts as a boundary, which also errs toward refusing.
+    private val GapBeforeParen = "[\\s\\p{Z}\\p{Cc}\\p{Cf}]*+"
 
-    /** The first [[BLOCKED_FUNCTIONS]] name `sql` calls, as written
-      * (`IDENTIFIER` in upper case). */
+    private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] =
+        BLOCKED_FUNCTIONS.map(fn => ("(?i)(?<!\\w)`?(" + fn + ")`?" + GapBeforeParen + "\\(").r)
+
+    /** The first [[BLOCKED_FUNCTIONS]] name `sql` calls, in lower case
+      * (`IDENTIFIER` in upper case). The text is lower-cased with Unicode
+      * rules first, as function lookup folds names, so a letter that only
+      * those rules fold to an ASCII one (the Kelvin sign) does not hide a
+      * name; `(?i)` alone folds ASCII only. */
     private[util] def blockedFunction(sql: String): Option[String] =
         BlockedFunctionPatterns.view
-            .flatMap(_.findFirstMatchIn(sql))
+            .flatMap(_.findFirstMatchIn(sql.toLowerCase(java.util.Locale.ROOT)))
             .headOption
             .map(_.group(1))
             .map(name => if (name.equalsIgnoreCase("identifier")) "IDENTIFIER" else name)
