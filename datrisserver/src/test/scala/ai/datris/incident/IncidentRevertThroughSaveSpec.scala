@@ -7,7 +7,18 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.api.TapAPIController
 import ai.datris.incident.IncidentRunner.{ProposedAction, ToolOutcome}
-import ai.datris.model.{DatrisEnvironment, PipelineConfig, PipelineStatusRollup, TapConfig, TenantContext}
+import ai.datris.model.{
+    DatrisEnvironment,
+    Destination,
+    FileAttributes,
+    PipelineConfig,
+    PipelineStatusRollup,
+    QdrantConfig,
+    Source,
+    TapConfig,
+    TenantContext,
+    UnstructuredAttributes
+}
 import ai.datris.policy.RecoverySettings
 import ai.datris.util.RunProfiler.{ColumnStats, Quantiles}
 import ai.datris.util.{CatalogEnableJob, CatalogOps, SecretNames, TapDependencies, TapScriptResult}
@@ -198,8 +209,8 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
     // --------------------------------------------------- tap store behind the save path
 
     /** Every versioned write the revert makes: (config, note, actor,
-      * whether the catalog lock was held by the writer). */
-    private case class Write(config: TapConfig, note: String, actor: String, lockHeld: Boolean)
+      * whether the catalog lock was held by the writer, when it was made). */
+    private case class Write(config: TapConfig, note: String, actor: String, lockHeld: Boolean, at: Long = System.nanoTime())
 
     /** True when the calling thread's catalog lock is held: another thread
       * cannot take it within 150 ms. */
@@ -227,6 +238,9 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
         val versionReads: mutable.Buffer[(String, Int)] = mutable.Buffer.empty
         @volatile var writeFailure: Option[String] = None
         @volatile var loadAllFailure: Option[String] = None
+        @volatile var readPipelineFailure: Option[String] = None
+        @volatile var readScriptFailure: Option[String] = None
+        @volatile var readTapFailure: Option[String] = None
 
         /** Runs inside loadAll (after the revert has decided, before it writes). */
         @volatile var onLoadAll: () => Unit = () => ()
@@ -237,11 +251,23 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
         def tap: TapConfig = taps.synchronized(taps.get("prices").orNull)
 
         lazy val io: TapAPIController.TapSaveIO = TapAPIController.TapSaveIO(
-            readTap = n => { record("readTap:" + n); taps.synchronized(taps.get(n).orNull) },
-            readPipeline = n => { record("readPipeline:" + n); pipelines.find(_.name == n).orNull },
+            readTap = n => {
+                record("readTap:" + n)
+                readTapFailure.foreach(m => throw new RuntimeException(m))
+                taps.synchronized(taps.get(n).orNull)
+            },
+            readPipeline = n => {
+                record("readPipeline:" + n)
+                readPipelineFailure.foreach(m => throw new RuntimeException(m))
+                pipelines.find(_.name == n).orNull
+            },
             secretType = n => { record("secretType:" + n); secretTypes.get(n) },
             scriptExists = t => { record("scriptExists:" + scriptKey(t)); scripts.contains(scriptKey(t)) },
-            readScript = t => { record("readScript:" + scriptKey(t)); scripts.get(scriptKey(t)) },
+            readScript = t => {
+                record("readScript:" + scriptKey(t))
+                readScriptFailure.foreach(m => throw new RuntimeException(m))
+                scripts.get(scriptKey(t))
+            },
             loadAll = () => {
                 record("loadAll")
                 loadAllFailure.foreach(m => throw new RuntimeException(m))
@@ -391,9 +417,9 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
         personChange: TapConfig => TapConfig = identity,
         healthy: Boolean = false,
         fakeRevert: Boolean = false,
-        install: Boolean = true
+        install: Boolean = true,
+        incidents: FakeStore = new FakeStore
     )(body: Ctx => T): T = {
-        val incidents = new FakeStore
         val ctx = new Ctx(Incident.newId(), incidents, store)
         incidents.insert(Incident(
             id = ctx.id,
@@ -781,19 +807,14 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
             }
             IncidentRunner.runIncident(c.id)
             assert(store.calls.contains("loadAll"), "the revert ran the save path: " + store.calls)
-            val now = store.tap
-            store.writes.toList match {
-                case Nil =>
-                    // Refused at the re-check: the incident says so; nothing written.
-                    val st = c.revertFailed.getOrElse(fail("a revert that wrote nothing says so: " + c.summaries))
-                    assert(st.detail.exists(_.contains("changed while it was being restored")), st)
-                    assert(now.catalog == "Moved" && !now.enabled && now.scriptPath == "tap-scripts/prices_agent.py", s"$now")
-                case List(w) =>
-                    // Or re-decided on the moved tap: its catalog and enabled state are kept.
-                    assert(w.config.catalog == "Moved" && !w.config.enabled, "never moved back: " + w.config)
-                    assert(w.lockHeld)
-                case many => fail("one write at most: " + many)
-            }
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            // Re-decided on the moved tap: its catalog and enabled state are kept.
+            val w = onlyWrite(c)
+            assert(w.config.catalog == "Moved" && !w.config.enabled, "never moved back: " + w.config)
+            assert(w.config.scriptPath == pre.scriptPath, s"${w.config}")
+            assert(w.lockHeld)
+            assert(store.tap.catalog == "Moved" && !store.tap.enabled && store.tap.scriptPath == pre.scriptPath, s"${store.tap}")
         }
     }
 
@@ -811,16 +832,183 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
         }
     }
 
-    test("store failure: a store read failing during the save checks fails the revert; no fallback write") {
+    test("a tap and pipeline list that cannot be read during the save checks: the revert lands as it is and the incident says the list was unavailable") {
         val store = standardStore()
         store.loadAllFailure = Some("tap list unavailable")
         scenario(store) { c =>
             IncidentRunner.runIncident(c.id)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assertAttribution(c, w)
+            assert(store.writeAttempts == 1)
+            assert(unstamped(w.config) == unstamped(expectedRevert(pre, c.liveBeforeRevert)), s"${w.config}")
+            val note = c.steps.find(_.summary == "restored definition could not be fully checked").getOrElse(fail("could-not-be-checked note: " + c.steps))
+            val text = c.stepText(note)
+            assert(text.contains("the tap and pipeline list could not be read") && text.contains("tap list unavailable"), text)
+            assert(!c.steps.exists(s => c.stepText(s).contains("would not be accepted")), "no dependency refusal: " + c.steps)
+            assert(c.incident.state == Incident.Failed, c.incident.outcome)
+        }
+    }
+
+    test("store failure: the tap's own read failing fails the revert, the incident says so and nothing is written") {
+        val store = standardStore()
+        store.readTapFailure = Some("tap store down")
+        scenario(store) { c =>
+            IncidentRunner.runIncident(c.id)
             val st = c.revertFailed.getOrElse(fail("revert failed step: " + c.summaries))
-            assert(st.detail.exists(_.contains("tap list unavailable")), st)
+            assert(st.detail.exists(_.contains("tap store down")), st)
             assert(store.writeAttempts == 0, "nothing written")
             assert(store.tap == c.liveBeforeRevert)
             assert(!c.reverted, c.summaries)
+        }
+    }
+
+    test("a stored snapshot that cannot be read into a tap definition fails the revert with a plain message; nothing is written") {
+        val store = new TapStore(Seq(pre), Map(("prices", 3) -> null), scripts = scripts)
+        scenario(store) { c =>
+            IncidentRunner.runIncident(c.id)
+            val st = c.revertFailed.getOrElse(fail("revert failed step: " + c.summaries))
+            assert(st.detail.contains("the stored version 3 of tap prices could not be read"), st)
+            assert(store.writeAttempts == 0)
+            assert(store.tap == c.liveBeforeRevert)
+        }
+    }
+
+    test("a tap deleted between the revert's decision and its write is not written or re-created; the incident says it no longer exists") {
+        val store = standardStore()
+        scenario(store) { c =>
+            store.onLoadAll = () => {
+                store.onLoadAll = () => ()
+                store.taps.synchronized { store.taps -= "prices" }
+            }
+            IncidentRunner.runIncident(c.id)
+            val st = c.revertFailed.getOrElse(fail("revert failed step: " + c.summaries))
+            assert(st.detail.exists(_.contains("tap prices no longer exists")), st)
+            assert(store.writeAttempts == 0, "nothing written")
+            assert(store.tap == null, "not re-created: " + store.tap)
+            assert(!c.reverted, c.summaries)
+        }
+    }
+
+    test("a script that cannot be read to infer dependencies: the revert lands with the stored inferred dependencies and the incident says so") {
+        val store = standardStore()
+        store.readScriptFailure = Some("object store timeout")
+        scenario(store) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assert(w.config.inferredDependsOn == pre.inferredDependsOn, s"${w.config}")
+            assert(w.config.scriptPath == pre.scriptPath)
+            val notes = c.steps.filter(_.summary == "restored definition could not be fully checked")
+            assert(notes.size == 1, "one note lists everything that could not be checked: " + c.steps)
+            val text = c.stepText(notes.head)
+            assert(text.contains("infer the tap's dependencies") && text.contains("object store timeout"), text)
+        }
+    }
+
+    test("a document tap whose target pipeline cannot be read: the revert lands and the incident says the pipeline could not be checked") {
+        val doc = pre.copy(tapType = "document")
+        val store = new TapStore(Seq(doc), Map(("prices", 3) -> doc), scripts = scripts)
+        store.readPipelineFailure = Some("pipeline store timeout")
+        scenario(store) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assert(unstamped(w.config) == unstamped(expectedRevert(doc, c.liveBeforeRevert)), s"${w.config}")
+            val note = c.steps.find(_.summary == "restored definition could not be fully checked").getOrElse(fail("note: " + c.steps))
+            val text = c.stepText(note)
+            assert(text.contains("the target pipeline 'orders' could not be read") && text.contains("pipeline store timeout"), text)
+        }
+    }
+
+    test("a document tap targeting a document pipeline reverts cleanly with no note") {
+        val doc = pre.copy(tapType = "document")
+        val orders = PipelineConfig(
+            name = "orders",
+            source = Source(fileAttributes = FileAttributes(unstructuredAttributes = UnstructuredAttributes())),
+            destination = Destination(qdrant = QdrantConfig("docs", null, null, null, null))
+        )
+        val store = new TapStore(Seq(doc), Map(("prices", 3) -> doc), pipelines = Seq(orders), scripts = scripts)
+        scenario(store) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assertAttribution(c, w)
+            assert(unstamped(w.config) == unstamped(expectedRevert(doc, c.liveBeforeRevert)), s"${w.config}")
+            assert(store.calls.contains("readPipeline:orders"), store.calls)
+            assert(!c.steps.exists(s => s.summary.startsWith("restored definition")), c.summaries)
+        }
+    }
+
+    test("an HTTP tap reverts cleanly to its pre-agent endpoint with no note") {
+        val http = pre.copy(
+            scriptKind = "http",
+            endpointUrl = "https://source.example/prices",
+            scriptStorage = null,
+            scriptPath = null,
+            packages = null
+        )
+        val store = new TapStore(Seq(http), Map(("prices", 3) -> http), scripts = scripts)
+        scenarioWithAgent(store, t => t.copy(description = "agent fix", endpointUrl = "https://source.example/prices-v2", version = t.version + 1)) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assertAttribution(c, w)
+            assert(w.config.endpointUrl == "https://source.example/prices" && w.config.description == "pre-agent", s"${w.config}")
+            assert(unstamped(w.config) == unstamped(expectedRevert(http, c.liveBeforeRevert)), s"${w.config}")
+            assert(!c.steps.exists(s => s.summary.startsWith("restored definition")), c.summaries)
+        }
+    }
+
+    test("a long refusal keeps its closing instruction within the note's 500 characters") {
+        val longName = "feeder_" + ("x" * 700)
+        val withDep = pre.copy(dependsOn = jl(longName))
+        val store = new TapStore(Seq(withDep), Map(("prices", 3) -> withDep), scripts = scripts)
+        scenarioWithAgent(store, t => agentChange(t).copy(dependsOn = jl())) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val note = c.steps.find(_.summary == "restored definition would not be accepted as a new save").getOrElse(fail("refusal note: " + c.steps))
+            val detail = note.detail.getOrElse("")
+            assert(detail.length <= 500, detail.length)
+            assert(detail.endsWith("The definition from before the agent's change was restored. Correct it and save the tap."), detail)
+            assert(detail.contains("feeder_x"), detail)
+        }
+    }
+
+    test("a note that cannot be recorded after the write does not turn a landed revert into a failed one") {
+        val store = standardStore()
+        val incidents = new FakeStore {
+            override def appendStep(id: String, step: IncidentStep): Unit =
+                if (step.summary == "revert written without the catalog lock") throw new RuntimeException("incident store hiccup")
+                else super.appendStep(id, step)
+        }
+        val audited = mutable.Buffer.empty[ai.datris.audit.AuditEntry]
+        val savedSink = ai.datris.audit.AuditLog.sinkOverride
+        DatrisEnvironment.values = env.copy(useAuditLog = true, auditLogTableName = "revert-spec-audit")
+        ai.datris.audit.AuditLog.sinkOverride = (e: ai.datris.audit.AuditEntry) => audited.synchronized { audited += e; () }
+        try scenario(store, incidents = incidents) { c =>
+                IncidentRunner.revertLockWaitMs = 300L
+                val release = new CountDownLatch(1)
+                holdLock(release)
+                try runBounded(c, 20000L)
+                finally release.countDown()
+                assert(store.writeAttempts == 1)
+                assert(c.revertFailed.isEmpty, c.summaries)
+                assert(c.reverted, c.summaries)
+                assert(c.incident.state == Incident.Failed, c.incident.outcome)
+                assert(c.incident.outcome.contains("verification failed after actions — definition reverted"), c.incident.outcome)
+                val reverts = audited.synchronized(audited.toList).filter(e => e.category == "incident" && e.action == "revert")
+                assert(reverts.size == 1 && reverts.head.resourceName.contains("prices"), audited)
+            }
+        finally {
+            ai.datris.audit.AuditLog.sinkOverride = savedSink
+            DatrisEnvironment.values = env
         }
     }
 
@@ -886,9 +1074,11 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
             try runBounded(c, 20000L)
             finally release.countDown()
             assert(c.reverted, c.summaries)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(!c.summaries.contains("revert written without the catalog lock"), c.summaries)
             val w = onlyWrite(c)
             assert(w.lockHeld)
-            assert(releasedAt > 0L, "the write came after the other operation released the lock")
+            assert(releasedAt > 0L && w.at > releasedAt, "the write came after the other operation released the lock")
         }
     }
 
@@ -913,22 +1103,56 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
         }
     }
 
-    test("a tap that changes again after the revert decided a second time fails the revert, says so and writes nothing") {
+    test("a tap that changes again after the revert decided a second time is written on a third read, keeping that read's state, and the incident says so") {
         val store = standardStore()
         scenario(store) { c =>
             // Every check moves the tap: the decision is never current at the write.
             val moves = new java.util.concurrent.atomic.AtomicInteger(0)
             store.onLoadAll = () => {
                 val n = moves.incrementAndGet()
-                store.taps.synchronized { store.taps("prices") = store.taps("prices").copy(catalog = "Moved" + n, enabled = n % 2 == 0) }
+                store.taps.synchronized {
+                    store.taps("prices") = store.taps("prices").copy(catalog = "Moved" + n, enabled = n % 2 == 0, createdByKeyLabel = "owner" + n)
+                }
             }
             IncidentRunner.runIncident(c.id)
             assert(moves.get == 2, "decided twice: " + moves.get)
-            val st = c.revertFailed.getOrElse(fail("revert failed step: " + c.summaries))
-            assert(st.detail.exists(_.contains("changed while it was being reverted")), st)
-            assert(store.writeAttempts == 0, "nothing written")
-            assert(!c.reverted, c.summaries)
-            assert(store.tap.catalog == "Moved2" && store.tap.scriptPath == "tap-scripts/prices_agent.py", s"${store.tap}")
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assertAttribution(c, w)
+            assert(w.lockHeld)
+            assert((w.config.catalog, w.config.enabled, w.config.createdByKeyLabel) == ("Moved2", true, "owner2"), s"${w.config}")
+            assert(w.config.scriptPath == pre.scriptPath && w.config.description == pre.description, s"${w.config}")
+            assert(c.summaries.contains("tap was being changed while it was reverted"), c.summaries)
+            assert(store.tap.catalog == "Moved2" && store.tap.scriptPath == pre.scriptPath, s"${store.tap}")
+        }
+    }
+
+    test("lock timeout combined with a change: the revert written without the lock carries the tap's fresh state") {
+        val store = standardStore()
+        scenario(store) { c =>
+            IncidentRunner.revertLockWaitMs = 300L
+            store.onLoadAll = () => {
+                store.onLoadAll = () => ()
+                store.taps.synchronized {
+                    store.taps("prices") =
+                        store.taps("prices").copy(catalog = "Moved", lastRunStatus = "running", lastRunTime = "2026-11-22 11:00:00", retryCount = 5)
+                }
+            }
+            val release = new CountDownLatch(1)
+            holdLock(release)
+            try runBounded(c, 20000L)
+            finally release.countDown()
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assert(store.writeAttempts == 1)
+            assert(
+                (w.config.catalog, w.config.lastRunStatus, w.config.lastRunTime, w.config.retryCount) == ("Moved", "running", "2026-11-22 11:00:00", 5),
+                s"${w.config}"
+            )
+            assert(w.config.enabled == c.liveBeforeRevert.enabled && w.config.scriptPath == pre.scriptPath, s"${w.config}")
+            assert(c.summaries.contains("revert written without the catalog lock"), c.summaries)
         }
     }
 

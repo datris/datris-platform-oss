@@ -144,6 +144,9 @@ UNREACHABLE = [
                        '"errorKind":"user_store_unavailable"}'), id="503-user-store"),
     pytest.param(requests.ConnectionError("connection refused"), id="connection-error"),
     pytest.param(requests.Timeout("read timed out"), id="timeout"),
+    pytest.param(ValueError("Invalid header value"), id="send-value-error"),
+    pytest.param(TypeError("expected string or bytes-like object"), id="send-type-error"),
+    pytest.param(RuntimeError(), id="send-error-without-message"),
     pytest.param((502, "<html><body>Bad Gateway</body></html>"), id="non-json"),
     pytest.param((200, json.dumps({"filtered": True})), id="filtered-without-tools"),
     pytest.param((200, json.dumps(["get_pipeline"])), id="unexpected-shape"),
@@ -252,6 +255,29 @@ def test_classification_never_raises_for_any_body(status, body):
 
 
 # --- the server could not answer ---------------------------------------------
+
+def test_a_failure_building_the_request_counts_as_could_not_ask(env, monkeypatch, capsys):
+    platform, clock = env
+
+    def broken_headers():
+        raise ValueError("header could not be built")
+
+    platform.answer = _filtered("get_pipeline")
+    assert _listed() == {"get_pipeline"}
+    clock.now += 61
+    monkeypatch.setattr(server, "_headers", broken_headers)
+    assert server._fetch_allowed_tools()[0] is None
+    assert _listed() == {"get_pipeline"}
+    assert "could not ask" in capsys.readouterr().err.lower()
+
+
+@pytest.mark.parametrize("failure", [ValueError("bad url"), KeyError("x"), RuntimeError()])
+def test_fetching_the_listing_never_raises(env, failure):
+    platform, _ = env
+    platform.answer = failure
+    status, reason = server._fetch_allowed_tools()
+    assert status is None and isinstance(reason, str) and reason
+
 
 @pytest.mark.parametrize("failure", REFUSALS)
 def test_a_refusal_with_nothing_cached_lists_no_tools(env, failure, capsys):
