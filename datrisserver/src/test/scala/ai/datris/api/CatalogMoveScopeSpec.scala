@@ -32,12 +32,12 @@ import scala.collection.JavaConverters._
   * style as `enableOrderedRefusal`), plus the handlers' wiring of it:
   * {{{
   * object CatalogAPIController {
-  *   /** assertMemberWrite on the source as today, then, for an API key whose
-  *     * scope can refuse create or update (CapabilityCheck.keyScopeApplies),
-  *     * the item as it would be stored, (toCatalog, owner), through the
-  *     * stored-item rule (CallerVisibility.storedWriteDenial with the write
-  *     * actions, then read). toCatalog null for detach. Throws
-  *     * CapabilityDeniedException. */
+  *   /** assertMemberWrite on the source as today, then, for an API key (never
+  *     * a signed-in session) whose scope can refuse create or update there,
+  *     * the item as it would be stored, (toCatalog, owner): the key may
+  *     * create or update the item at its new location; for detach
+  *     * (toCatalog null) delete there counts as well. No read is required at
+  *     * the destination. Throws CapabilityDeniedException. */
   *   def assertMemberMove(request: HttpServletRequest, resource: String, action: String,
   *                        fromCatalog: String, toCatalog: String, owner: String): Unit
   *
@@ -45,7 +45,8 @@ import scala.collection.JavaConverters._
   *     * (action "delete", toCatalog = null), before anything is written:
   *     * every member tap then pipeline through assertMemberMove; for a
   *     * placeholder-only catalog every placeholder (today's
-  *     * placeholderScopeDenial plus the same destination check). Some(403)
+  *     * placeholderScopeDenial, plus the same destination check for a rename
+  *     * only: a detach of a placeholder-only catalog lands nothing). Some(403)
   *     * on the first refusal, whose message names that member only when the
   *     * caller may read it (else the shared scope-denial text alone); None
   *     * when the whole move is allowed. */
@@ -53,6 +54,11 @@ import scala.collection.JavaConverters._
   *                   members: CatalogOps.Members, placeholders: Seq[TapConfig]): Option[ResponseEntity[String]]
   * }
   * }}}
+  * The rename and detach member loops re-read each member live and re-check
+  * it with assertMemberMove (the new name, or null for detach) just before
+  * writing it, so an item re-created between the snapshot and the write is
+  * held to the destination rule too; cascade delete keeps assertMemberWrite.
+  *
   * Restricted-session and unchanged-caller answers that come before the lock
   * are driven through the real `renameCatalog` / `deleteCatalog` entry
   * points (a running enable job makes the handler answer 409 before any
@@ -272,11 +278,34 @@ class CatalogMoveScopeSpec extends AnyFunSuite with BeforeAndAfterAll {
         }
         // with read in Sales the per-member rule alone lets every member through today
         assert(todayEveryMemberPasses(req(key("sales-detacher", detachSalesCaps: _*), "DELETE"), "delete", "Sales", salesMembers))
-        // placeholder-only catalog
+        // placeholder-only catalog: nothing lands in Uncataloged, so it detaches as on v1.61.0
+        // (the source check on the placeholder only), as a cascade delete of it does
         val k = key("sales-detacher", detachSalesCaps: _*)
+        val emptyCatalog = CatalogOps.Members(Nil, Nil)
+        for (owner <- Seq("someone", "sales-detacher"))
+            assert(
+                CatalogAPIController.moveRefusal(req(k, "DELETE"), "delete", "Sales", null, emptyCatalog, Seq(placeholder("Sales", owner))).isEmpty,
+                "placeholder detach, owner " + owner
+            )
+        // the source check on the placeholder still applies to detach
+        val noTapDelete = Seq("pipeline:delete:catalog=Sales", "pipeline:read:catalog=Sales", "tap:read:catalog=Sales")
+        val src = assert403(
+            CatalogAPIController.moveRefusal(
+                req(key("no-tap-delete", noTapDelete: _*), "DELETE"),
+                "delete",
+                "Sales",
+                null,
+                emptyCatalog,
+                Seq(placeholder("Sales", "someone"))
+            ),
+            "placeholder detach without tap delete in scope"
+        )
+        assert(message(src) == ScopeDenialWording.message("no-tap-delete", "tap", "delete", noTapDelete), message(src))
+        // the placeholder-only rename stays refused for the same source-only key
+        val renameKey = key("sales-editor", renameSalesCaps: _*)
         assert403(
-            CatalogAPIController.moveRefusal(req(k, "DELETE"), "delete", "Sales", null, CatalogOps.Members(Nil, Nil), Seq(placeholder("Sales", "someone"))),
-            "placeholder detach"
+            CatalogAPIController.moveRefusal(req(renameKey), "update", "Sales", "Sales2", emptyCatalog, Seq(placeholder("Sales", "someone"))),
+            "placeholder rename"
         )
     }
 
@@ -324,6 +353,103 @@ class CatalogMoveScopeSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(partial.failed.map(_._1) == Seq("t_theirs"), partial)
     }
 
+    // ------------------------------------------------------------ mixed scopes, wildcards, inert scopes
+
+    private val tapOnly = CatalogOps.Members(Seq(tap("t_orders", "Sales", "someone")), Nil)
+    private val pipelineOnly = CatalogOps.Members(Nil, Seq(pg("p_orders", "Sales", "someone")))
+
+    private def allowed(r: Option[ResponseEntity[String]]): Boolean = {
+        r.foreach(x => assert(x.getStatusCode.value == 403, x.getBody))
+        r.isEmpty
+    }
+
+    test(
+        "mixed: tap capabilities scoped to the catalog and pipeline capabilities unscoped (and the reverse), on catalogs of only taps, only pipelines, and both"
+    ) {
+        def caps(scoped: String, unscoped: String): Seq[String] =
+            Seq("create", "update", "delete", "read").flatMap(a => Seq(scoped + ":" + a + ":catalog=Sales", unscoped + ":" + a))
+        val shapes = Seq(
+            // (label, caps, catalog of only taps allowed, only pipelines allowed)
+            ("taps-scoped", caps("tap", "pipeline"), false, true),
+            ("pipelines-scoped", caps("pipeline", "tap"), true, false)
+        )
+        for ((label, cs, tapsOk, pipelinesOk) <- shapes) {
+            val k = key(label, cs: _*)
+            for (
+                (what, members, expected) <- Seq(("only taps", tapOnly, tapsOk), ("only pipelines", pipelineOnly, pipelinesOk), ("both", salesMembers, false))
+            ) {
+                // every member passes the per-member source rule as on v1.61.0
+                assert(todayEveryMemberPasses(req(k), "update", "Sales", members), label + " " + what)
+                assert(todayEveryMemberPasses(req(k, "DELETE"), "delete", "Sales", members), label + " " + what)
+                assert(allowed(CatalogAPIController.moveRefusal(req(k), "update", "Sales", "Sales2", members, Nil)) == expected, label + " rename " + what)
+                assert(
+                    allowed(CatalogAPIController.moveRefusal(req(k, "DELETE"), "delete", "Sales", null, members, Nil)) == expected,
+                    label + " detach " + what
+                )
+            }
+        }
+    }
+
+    test("wildcard: a scoped wildcard key may not rename or detach its catalog's items out of its scope; one covering both names renames") {
+        val one = key("wild-sales", "*:*:catalog=Sales")
+        assert(todayEveryMemberPasses(req(one), "update", "Sales", salesMembers))
+        assert403(CatalogAPIController.moveRefusal(req(one), "update", "Sales", "Sales2", salesMembers, Nil), "wildcard rename")
+        assert403(CatalogAPIController.moveRefusal(req(one, "DELETE"), "delete", "Sales", null, salesMembers, Nil), "wildcard detach")
+        assert403(
+            CatalogAPIController.moveRefusal(req(one), "update", "Sales", "Sales2", CatalogOps.Members(Nil, Nil), Seq(placeholder("Sales", "someone"))),
+            "wildcard placeholder rename"
+        )
+        // a placeholder-only catalog detaches as on v1.61.0
+        assert(
+            CatalogAPIController.moveRefusal(req(one, "DELETE"), "delete", "Sales", null, CatalogOps.Members(Nil, Nil), Seq(placeholder("Sales", "someone"))).isEmpty
+        )
+        val both = key("wild-both", "*:*:catalog=Sales", "*:*:catalog=Sales2")
+        assert(CatalogAPIController.moveRefusal(req(both), "update", "Sales", "Sales2", salesMembers, Nil).isEmpty)
+    }
+
+    test("partial writer: a key that may change pipelines but holds no tap update is refused on a catalog with taps and nothing moves") {
+        val shapes = Seq(
+            "no-tap-update" -> Seq("pipeline:create", "pipeline:update", "pipeline:read", "tap:read"),
+            "own-taps-only" -> Seq("pipeline:update", "pipeline:read", "tap:update:owner=self", "tap:read:owner=self")
+        )
+        for ((label, cs) <- shapes) {
+            val k = key(label, cs: _*)
+            // on v1.61.0 the per-member loop moved the pipeline and reported the tap failed
+            assert(!todayEveryMemberPasses(req(k), "update", "Sales", salesMembers), label)
+            CatalogAPIController.assertMemberWrite(req(k), "pipeline", "update", "Sales", "someone")
+            val refused = assert403(CatalogAPIController.moveRefusal(req(k), "update", "Sales", "Sales2", salesMembers, Nil), label)
+            assert(message(refused).startsWith(ScopeDenialWording.message(label, "tap", "update", cs)), message(refused))
+            // pipelines alone still move
+            assert(CatalogAPIController.moveRefusal(req(k), "update", "Sales", "Sales2", pipelineOnly, Nil).isEmpty, label + " pipelines only")
+        }
+    }
+
+    test("inert: a capability whose scope is not applied grants nothing where the items land; beside unscoped capabilities it changes nothing") {
+        def inertKey(label: String, caps: String*): ResolvedKey = {
+            val (applied, inert) = ai.datris.auth.CapabilityScopes.partition(Capability.parseList(caps))
+            assert(inert.nonEmpty, "fixture carries an inert capability")
+            ResolvedKey(None, label, applied, isLegacyFullAccess = false, inertCapabilities = inert)
+        }
+        val destInert =
+            Seq("create", "update").flatMap(a => Seq("tap:" + a + ":catalog=Sales2,collection=docs", "pipeline:" + a + ":catalog=Sales2,collection=docs"))
+        val k = inertKey("inert-dest", renameSalesCaps ++ destInert: _*)
+        assert(todayEveryMemberPasses(req(k), "update", "Sales", salesMembers))
+        assert403(CatalogAPIController.moveRefusal(req(k), "update", "Sales", "Sales2", salesMembers, Nil), "inert destination")
+        val besideUnscoped = inertKey("inert-beside", unscopedCaps ++ Seq("pipeline:create", "tap:create", "pipeline:read:catalog=Sales,collection=docs"): _*)
+        assert(todayEveryMemberPasses(req(besideUnscoped), "update", "Sales", salesMembers))
+        assert(CatalogAPIController.moveRefusal(req(besideUnscoped), "update", "Sales", "Sales2", salesMembers, Nil).isEmpty)
+        assert(CatalogAPIController.moveRefusal(req(besideUnscoped, "DELETE"), "delete", "Sales", null, salesMembers, Nil).isEmpty)
+    }
+
+    test("released behaviour: a key with unscoped delete and read scoped to the catalog detaches it, as on v1.61.0") {
+        val cs = Seq("pipeline:delete", "tap:delete", "pipeline:read:catalog=Sales", "tap:read:catalog=Sales")
+        val r = req(key("unscoped-delete", cs: _*), "DELETE")
+        assert(todayEveryMemberPasses(r, "delete", "Sales", salesMembers))
+        assert(CatalogAPIController.moveRefusal(r, "delete", "Sales", null, salesMembers, Nil).isEmpty)
+        for (res <- Seq("tap", "pipeline"))
+            CatalogAPIController.assertMemberMove(req(key("unscoped-delete", cs: _*), "DELETE"), res, "delete", "Sales", null, "someone")
+    }
+
     // ------------------------------------------------------------ wiring
 
     private def source(rel: String): String = {
@@ -360,6 +486,15 @@ class CatalogMoveScopeSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(at > body.indexOf("already exists. Use move to merge catalogs."), "an existing target still answers 409 first")
         for (w <- Seq("TapConfigIO.writeVersioned(", "PipelineConfigIO.writeVersioned(", "removePlaceholder(", "UserStore."))
             assert(body.indexOf(w) < 0 || at < body.indexOf(w), "pre-flight must come before " + w)
+        // the live re-check of each member just before its write holds it to the destination rule too
+        for (res <- Seq("tap", "pipeline")) {
+            val recheck = "CatalogAPIController.assertMemberMove(request, \"" + res + "\", \"update\", live.catalog, newName, live.createdByKeyLabel)"
+            val i = body.indexOf(recheck)
+            assert(i > at, "rename re-checks the live " + res + " with assertMemberMove: " + recheck)
+            val write = (if (res == "tap") "TapConfigIO" else "PipelineConfigIO") + ".writeVersioned(live.copy(catalog = newName)"
+            assert(i < body.indexOf(write), "the re-check comes before the " + res + " write")
+        }
+        assert(!body.contains("CatalogAPIController.assertMemberWrite("), "rename re-checks with assertMemberMove")
     }
 
     test("wiring: detach runs the pre-flight before writing; the cascade branch keeps its per-member loop and no pre-flight") {
@@ -378,6 +513,12 @@ class CatalogMoveScopeSpec extends AnyFunSuite with BeforeAndAfterAll {
             lineAt(body, at).contains("\"detach\"") || (at > body.indexOf("if (m == \"detach\") {") && body.indexOf("if (m == \"detach\") {") >= 0)
         assert(detachGated, "the pre-flight applies to detach only: " + lineAt(body, at))
         val cascade = body.substring(cascadeFrom)
+        // the detach loops re-check each live member with the destination rule
+        val detachLoops = body.substring(at, cascadeFrom)
+        assert(detachLoops.contains("CatalogAPIController.assertMemberMove(request, \"tap\", \"delete\", live.catalog, null, live.createdByKeyLabel)"))
+        assert(detachLoops.contains("CatalogAPIController.assertMemberMove(request, \"pipeline\", \"delete\", live.catalog, null, live.createdByKeyLabel)"))
+        assert(!detachLoops.contains("CatalogAPIController.assertMemberWrite("), "detach re-checks with assertMemberMove")
+        assert(!cascade.contains("assertMemberMove"), "cascade keeps assertMemberWrite")
         assert(!cascade.contains("moveRefusal"))
         assert(cascade.contains("trackDenied(denied, n)"))
         assert(cascade.contains("CatalogAPIController.assertMemberWrite(request, \"tap\", \"delete\", live.catalog, live.createdByKeyLabel)"))

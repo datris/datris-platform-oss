@@ -148,14 +148,14 @@ class CatalogAPIController {
                 val tapResult = CatalogOps.execute(members.taps.map(_.name)) { n =>
                     trackDenied(denied, n) {
                         val live = readTap(n, name)
-                        CatalogAPIController.assertMemberWrite(request, "tap", "update", live.catalog, live.createdByKeyLabel)
+                        CatalogAPIController.assertMemberMove(request, "tap", "update", live.catalog, newName, live.createdByKeyLabel)
                         TapConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
                     }
                 }
                 val pipelineResult = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                     trackDenied(denied, n) {
                         val live = readPipeline(n, name)
-                        CatalogAPIController.assertMemberWrite(request, "pipeline", "update", live.catalog, live.createdByKeyLabel)
+                        CatalogAPIController.assertMemberMove(request, "pipeline", "update", live.catalog, newName, live.createdByKeyLabel)
                         PipelineConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
                     }
                 }
@@ -287,14 +287,14 @@ class CatalogAPIController {
                         val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readTap(n, name)
-                                CatalogAPIController.assertMemberWrite(request, "tap", "delete", live.catalog, live.createdByKeyLabel)
+                                CatalogAPIController.assertMemberMove(request, "tap", "delete", live.catalog, null, live.createdByKeyLabel)
                                 TapConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
                             }
                         }
                         val p = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readPipeline(n, name)
-                                CatalogAPIController.assertMemberWrite(request, "pipeline", "delete", live.catalog, live.createdByKeyLabel)
+                                CatalogAPIController.assertMemberMove(request, "pipeline", "delete", live.catalog, null, live.createdByKeyLabel)
                                 PipelineConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
                             }
                         }
@@ -554,9 +554,10 @@ class CatalogAPIController {
     }
 
     /** Cancel the catalog's ordered enable. The in-flight test, run or load
-      * wait finishes; taps not yet started are `cancelled`. An API key needs
-      * `tap:run` and `tap:read` on the catalog's taps (403 otherwise, job or
-      * not); 404 when no job is running. */
+      * wait finishes; taps not yet started are `cancelled`. Needs `tap:run`
+      * on the catalog's taps, and for a key limited to a catalog or to what
+      * it created `tap:read` too (403 otherwise, job or not); 404 when no job
+      * is running. */
     @DeleteMapping(path = Array("/catalog/{name}/enable-ordered"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def cancelEnableOrdered(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
@@ -1331,8 +1332,8 @@ object CatalogAPIController {
       * `toCatalog` = the new name) and detach (`delete`, `toCatalog` null),
       * before anything is written: every member tap, then every member
       * pipeline, through [[assertMemberMove]]; for a catalog with no members,
-      * every placeholder (tap scope on the placeholder where it is, then the
-      * same destination check). Some(403) on the first refusal; its message
+      * every placeholder (tap scope on the placeholder where it is, then, for
+      * a rename only, the same destination check). Some(403) on the first refusal; its message
       * names the refused member only when the caller may read it, otherwise
       * it is the shared scope-denial text alone. None: the whole move is
       * allowed. Pure apart from the audit note of the refusal. */
@@ -1359,7 +1360,9 @@ object CatalogAPIController {
             placeholders.view.flatMap { ph =>
                 try {
                     CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(fromCatalog, ph.createdByKeyLabel))
-                    assertKeyMoveTarget(request, "tap", action, toCatalog, ph.createdByKeyLabel)
+                    // A placeholder is bookkeeping, not an item: a detach lands
+                    // nothing anywhere, so only a rename checks where it goes.
+                    if (toCatalog != null) assertKeyMoveTarget(request, "tap", action, toCatalog, ph.createdByKeyLabel)
                     None
                 } catch {
                     case e: CapabilityDeniedException => forbidden(e.getMessage)
@@ -1571,9 +1574,10 @@ object CatalogAPIController {
       * ordered-enable job: catalog scope = the catalog, owner scope = whoever
       * started the job (absent when there is none). Route capability alone
       * would let a `catalog=A` key read or cancel catalog B's job. For an
-      * action other than `read` (cancel: `run`) an API key must also read
-      * the catalog's taps ([[CapabilityCheck.assertWriteReadable]]), so a
-      * key that cannot gets the same 403 whether or not a job is running. */
+      * action other than `read` (cancel: `run`) a key limited to a catalog
+      * or to what it created must also read the catalog's taps
+      * ([[CapabilityCheck.assertWriteReadable]]), so such a key that cannot
+      * gets the same 403 to a cancel whether or not a job is running. */
     def enableJobScopeDenial(request: HttpServletRequest, action: String, catalog: String): Option[ResponseEntity[String]] = {
         val owner = CatalogEnableJob.status(catalog).map(_.startedBy).orNull
         try {

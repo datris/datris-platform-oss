@@ -302,6 +302,32 @@ class CatalogEnableOrderedApiSpec extends AnyFunSuite with BeforeAndAfterAll {
         }
     }
 
+    test("D3 unchanged: a key that is not limited, holding unscoped tap:run and no other capability, cancels as today (200, 404 with no job)") {
+        val cat = "ceo-d3-unscoped-run"
+        val k = key("tap:run")
+        assertNoJob(cancel(Some(k), cat), cat, "no job")
+        withJob(cat)(assertCancelled(cancel(Some(k), cat), cat, "running"))
+    }
+
+    test(
+        "released behaviour: the status route for a key that cannot read the catalog's taps keeps today's answers ({active:false} with no job, 403 with one)"
+    ) {
+        val path = (cat: String) => "/api/v1/catalog/" + cat + "/enable-ordered"
+        for (
+            (what, caps) <- Seq("run only, scoped" -> Seq("tap:run:catalog=ceo-st-run"), "read elsewhere" -> Seq("tap:run", "tap:read:catalog=ceo-st-other"))
+        ) {
+            val cat = if (what == "run only, scoped") "ceo-st-run" else "ceo-st-elsewhere"
+            val k = key(caps: _*)
+            val none = new CatalogAPIController().enableOrderedStatus(null, cat, req(Some(k), "GET", path(cat)))
+            assert(none.getStatusCode.value() == 200 && none.getBody == """{"active":false}""", what + ": " + none.getBody)
+            withJob(cat) {
+                val st = new CatalogAPIController().enableOrderedStatus(null, cat, req(Some(k), "GET", path(cat)))
+                assert(st.getStatusCode.value() == 403, what + ": " + st.getBody)
+                assert(!st.getBody.contains("tok-" + cat), what + ": " + st.getBody)
+            }
+        }
+    }
+
     test("D3 unchanged: a restricted session with a view grant gets today's 403, without a grant today's 404, job or not") {
         import ai.datris.util.APIKeyValidator
         import ai.datris.util.InMemoryUserDb.grants
