@@ -48,7 +48,7 @@ curl http://localhost:8080/api/v1/version
 | `version` | Server version |
 | `gitHeadCommit` | Git commit the running jar was built from |
 | `builtAtMillis` | Build time of the running jar, Unix epoch milliseconds |
-| `environment` | Environment name (e.g., `oss` for self-hosted, or tenant prefix for managed hosting) |
+| `environment` | Environment name (`oss` unless the install renamed it) |
 | `environmentLabel` | Only present when `DATRIS_ENV` is set: the label the UI shows for this install |
 | `multiTenant` | **Deprecated.** Always `"false"`: multi-tenant mode is retired, and a server with it switched on does not start. Kept so existing readers of the field keep working; do not rely on it. |
 | `hosted` | Whether this is a managed/hosted deployment |

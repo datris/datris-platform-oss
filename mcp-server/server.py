@@ -62,7 +62,7 @@ DATRIS_API_URL = os.getenv("DATRIS_API_URL", "http://localhost:8080")
 REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "").lower() in ("true", "1", "yes")
 WEBSITE_URL = os.getenv("WEBSITE_URL", "https://datris.ai")
 
-# Per-session API key for multi-tenant SSE/HTTP connections
+# Per-session API key for SSE/HTTP connections
 _session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("_session_api_key", default="")
 # The human an in-platform chat (Assistant / Ops / Catalog) is acting for,
 # relayed from the `X-Datris-On-Behalf-Of` header the Datris server sends on

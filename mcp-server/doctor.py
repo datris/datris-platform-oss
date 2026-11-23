@@ -648,38 +648,78 @@ def _multi_tenant_on(value):
     return value is not None and str(value).strip().lower() in MULTI_TENANT_ON
 
 
+def _dotenv_value_as_compose_reads_it(value):
+    """The `.env` MULTI_TENANT value as Docker Compose reads it. `parse_dotenv`
+    keeps an inline comment as part of the value; Compose does not: on an
+    unquoted value a space followed by `#` starts a comment (a `#` with no
+    space before it, or a tab before it, stays in the value), and after a
+    closing quote the rest of the line is ignored."""
+    if value is None:
+        return None
+    value = str(value)
+    if value[:1] in ("'", '"'):
+        end = value.find(value[0], 1)
+        if end > 0:
+            return value[1:end]
+    return value.split(" #", 1)[0].rstrip()
+
+
 def check_config_multi_tenant(runner, dotenv):
     """Multi-tenant mode is retired: a server with it on refuses to start.
     Reads `.env` MULTI_TENANT (no Docker needed), MULTI_TENANT in the shell
     environment `datris doctor` runs in (Compose substitutes it too, and the
     shell wins over `.env`), and the running `datris` container's MULTITENANT.
-    On in any of them is an error; skip only with no Docker and no value."""
+    On in any of them is an error; skip only with no Docker and no value.
+    The advice depends on where it is on: in `.env` or the shell, remove it
+    (naming where) or stay on the previous version; only in the running
+    container, the running server is in multi-tenant mode and upgrading would
+    switch it off."""
     dotenv = dotenv or {}
     found = []
     values = 0
+    in_dotenv = in_shell = in_container = False
     if "MULTI_TENANT" in dotenv:
         values += 1
-        if _multi_tenant_on(dotenv.get("MULTI_TENANT")):
+        if _multi_tenant_on(_dotenv_value_as_compose_reads_it(dotenv.get("MULTI_TENANT"))):
+            in_dotenv = True
             found.append("the .env file")
     if "MULTI_TENANT" in os.environ:
         values += 1
         if _multi_tenant_on(os.environ.get("MULTI_TENANT")):
+            in_shell = True
             found.append("the shell environment")
     if runner.has_docker():
         container = _container_env(runner, "datris")
         if container is not None:
             values += 1
             if _multi_tenant_on(container.get("MULTITENANT")):
+                in_container = True
                 found.append("the running datris container (MULTITENANT)")
     elif not values:
         return result("config.multi_tenant", "skip", "docker not on PATH and no MULTI_TENANT in .env or the shell environment")
+    if in_container and not (in_dotenv or in_shell):
+        return result(
+            "config.multi_tenant", "error",
+            "The running datris server is in multi-tenant mode (MULTITENANT is on in the running datris container), "
+            "although MULTI_TENANT is no longer on in .env or the shell environment. Multi-tenant mode is no longer supported.",
+            "Upgrading would switch multi-tenant mode off: the API keys issued to tenants stop working, the tenants' pipelines, "
+            "taps and schedules are no longer served or run, and the default environment's data is looked for in different "
+            "databases, so it appears to be missing (nothing is deleted). Read " + UPGRADE_DOCS_URL + " before you upgrade; "
+            "to keep running as you are, stay on the previous version.",
+        )
     if found:
+        places = []
+        if in_dotenv:
+            places.append(".env")
+        if in_shell:
+            places.append("the shell environment that runs `docker compose`")
         return result(
             "config.multi_tenant", "error",
             "MULTI_TENANT is on in " + " and ".join(found) + ". Multi-tenant mode is no longer supported: "
             "a server on the new version does not start with it on (it stops at once and changes nothing; your data is untouched).",
-            "Remove MULTI_TENANT from .env and from the shell environment that runs `docker compose` (or set it to false) "
-            "before you upgrade, or stay on the previous version, which keeps working as it does now. See " + UPGRADE_DOCS_URL + ".",
+            "Remove MULTI_TENANT from " + " and from ".join(places) + " (or set it to false) before you upgrade, "
+            "or stay on the previous version, which keeps working as it does now. Switching it off ends the tenants' "
+            "access and changes where the default environment's data is looked for; see " + UPGRADE_DOCS_URL + ".",
         )
     return result("config.multi_tenant", "ok", "multi-tenant mode is off (MULTI_TENANT not on in .env, the shell environment or the datris container)")
 

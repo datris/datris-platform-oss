@@ -943,7 +943,7 @@ components:
           description: Build time of the running jar, epoch milliseconds
         environment:
           type: string
-          description: Environment name (e.g., oss for self-hosted, or tenant prefix for managed hosting)
+          description: Environment name (oss unless the install renamed it)
         environmentLabel:
           type: string
           description: Deployment label from DATRIS_ENV (e.g. dev, qa, prod); present only when set
@@ -7882,7 +7882,7 @@ paths:
         Proxies the MCP server's activity feed (agent sessions and tool calls)
         with server-side enrichment: timestamps are formatted with the
         platform's date settings and each session/call is labeled with the
-        tenant or key name resolved from its API-key hint. Always returns 200 —
+        key name resolved from its API-key hint. Always returns 200 —
         when the MCP server is unreachable or auth fails, the payload carries
         an `error` message and an `errorKind` of "unreachable" or "auth" with
         empty session/call arrays.

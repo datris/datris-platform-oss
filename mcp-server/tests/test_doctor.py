@@ -13,6 +13,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import doctor as doc  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_multi_tenant_in_the_shell(monkeypatch):
+    """The multi-tenant check reads MULTI_TENANT from the process environment;
+    the developer's shell must not decide these tests. Tests that need it set
+    it themselves."""
+    monkeypatch.delenv("MULTI_TENANT", raising=False)
+
+
 class FakeRunner(doc.Runner):
     """Answers subprocess calls from a table keyed by the joined argv.
     Unknown commands fail like a missing container would."""
@@ -297,10 +305,88 @@ def test_config_multi_tenant_is_an_error_when_the_env_file_turns_the_setting_on(
         _assert_plain_multi_tenant_error(doc.check_config_multi_tenant(r, doc.parse_dotenv(str(p))))
 
 
+def _assert_running_server_multi_tenant_error(res):
+    """On only in the running container: the advice is that the running server
+    is in multi-tenant mode and that upgrading would switch it off."""
+    assert res["id"] == MT_CHECK
+    assert res["status"] == "error", res
+    text = res["detail"] + " " + res["remediation"]
+    assert "no longer supported" in text.lower(), res
+    assert "running datris server is in multi-tenant mode" in res["detail"], res
+    assert "upgrading would switch multi-tenant mode off" in res["remediation"].lower(), res
+    assert doc.UPGRADE_DOCS_URL in res["remediation"], res
+    assert "previous version" in res["remediation"], res
+    # nothing to remove: .env and the shell no longer have it
+    assert "remove multi_tenant" not in res["remediation"].lower(), res
+    assert "Traceback" not in text and "Exception" not in text, res
+
+
 def test_config_multi_tenant_is_an_error_when_the_running_container_has_it_on(tmp_path):
     for value in MT_ON:
         r = FakeRunner(_datris_env(MULTITENANT=value, USEAPIKEYS="true"), str(tmp_path))
-        _assert_plain_multi_tenant_error(doc.check_config_multi_tenant(r, {}))
+        _assert_running_server_multi_tenant_error(doc.check_config_multi_tenant(r, {}))
+        # `.env` holding it off counts as "no longer has it"
+        _assert_running_server_multi_tenant_error(doc.check_config_multi_tenant(r, {"MULTI_TENANT": "false"}))
+
+
+def test_config_multi_tenant_remediation_names_where_to_remove_it(tmp_path, monkeypatch):
+    on_container = FakeRunner(_datris_env(MULTITENANT="true"), str(tmp_path))
+    off_container = FakeRunner(_datris_env(MULTITENANT="false"), str(tmp_path))
+    shell_place = "the shell environment that runs `docker compose`"
+    for r in (on_container, off_container):
+        # .env only
+        monkeypatch.delenv("MULTI_TENANT", raising=False)
+        res = doc.check_config_multi_tenant(r, {"MULTI_TENANT": "true"})
+        _assert_plain_multi_tenant_error(res)
+        assert "Remove MULTI_TENANT from .env (or set it to false)" in res["remediation"], res
+        assert shell_place not in res["remediation"], res
+        # shell only
+        monkeypatch.setenv("MULTI_TENANT", "true")
+        res = doc.check_config_multi_tenant(r, {})
+        _assert_plain_multi_tenant_error(res)
+        assert "Remove MULTI_TENANT from " + shell_place + " (or set it to false)" in res["remediation"], res
+        assert "from .env" not in res["remediation"], res
+        # both
+        res = doc.check_config_multi_tenant(r, {"MULTI_TENANT": "yes"})
+        _assert_plain_multi_tenant_error(res)
+        assert "Remove MULTI_TENANT from .env and from " + shell_place in res["remediation"], res
+        assert doc.UPGRADE_DOCS_URL in res["remediation"], res
+    # without Docker the .env / shell wording is unchanged
+    monkeypatch.delenv("MULTI_TENANT", raising=False)
+    res = doc.check_config_multi_tenant(FakeRunner({}, str(tmp_path), docker=False), {"MULTI_TENANT": "on"})
+    assert "Remove MULTI_TENANT from .env (or set it to false)" in res["remediation"], res
+
+
+def test_config_multi_tenant_reads_an_env_file_inline_comment_as_compose_does(tmp_path):
+    # Docker Compose: on an unquoted value a space then `#` starts a comment;
+    # after a closing quote the rest of the line is ignored; `#` with no space
+    # before it, or inside quotes, stays in the value.
+    on_lines = (
+        "MULTI_TENANT=true # switched on for tenants\n",
+        "MULTI_TENANT=true   #note\n",
+        'MULTI_TENANT="true" # note\n',
+        "MULTI_TENANT='on' # note\n",
+        "export MULTI_TENANT=yes # note\n",
+    )
+    off_lines = (
+        "MULTI_TENANT=false # note\n",
+        "MULTI_TENANT=true#note\n",
+        "MULTI_TENANT='true # x' # y\n",
+        "MULTI_TENANT= # note\n",
+    )
+    p = tmp_path / ".env"
+    for line in on_lines:
+        p.write_text("USE_API_KEYS=true\n" + line)
+        r = FakeRunner({}, str(tmp_path), docker=False)
+        _assert_plain_multi_tenant_error(doc.check_config_multi_tenant(r, doc.parse_dotenv(str(p))))
+    for line in off_lines:
+        p.write_text("USE_API_KEYS=true\n" + line)
+        r = FakeRunner({}, str(tmp_path), docker=False)
+        res = doc.check_config_multi_tenant(r, doc.parse_dotenv(str(p)))
+        assert res["status"] == "ok", (line, res)
+    # parse_dotenv itself is unchanged: other checks read the value as before
+    p.write_text("A=1 # note\n")
+    assert doc.parse_dotenv(str(p)) == {"A": "1 # note"}
 
 
 def test_config_multi_tenant_is_ok_when_off_or_absent(tmp_path):

@@ -808,7 +808,7 @@ Probes use the same logic as `/api/v1/health/services`, with a 2-second timeout 
 
 User-configured system prompt fragments that auto-inject into tap AI flows when the user's text matches the fragment's key or any alias. See [Tap Prompt Fragments](/tap-prompts) for the full concept; this section covers the REST endpoints.
 
-Fragments are per-tenant, stored in MongoDB at `{env}-tap-prompt`, and matched case-insensitively with word boundaries.
+Fragments are per install, stored in MongoDB at `{env}-tap-prompt`, and matched case-insensitively with word boundaries.
 
 ### List Fragments
 
@@ -864,7 +864,7 @@ Create-or-update semantics — if a fragment with the same `key` already exists,
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `key` | string | Yes | Primary match keyword. Unique per tenant. Matched case-insensitively with `\b` word boundaries. |
+| `key` | string | Yes | Primary match keyword. Unique per install. Matched case-insensitively with `\b` word boundaries. |
 | `aliases` | string[] | No | Additional match keywords. Same matching rules as `key`. |
 | `content` | string | Yes | System-prompt text appended under a `## User-provided context` block when a match fires. |
 | `enabled` | boolean | No (default `true`) | When `false`, the fragment stays in storage but is excluded from matching. |

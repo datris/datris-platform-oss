@@ -122,6 +122,6 @@ Things to know when restoring:
 
 - They don't isolate access — anyone with API access to a tap can see it regardless of catalog.
 - They don't affect tap or pipeline behavior, scheduling, or destination.
-- They aren't permissioned — catalogs are a flat namespace per tenant.
+- They aren't permissioned — catalogs are a flat namespace per install.
 
-If you need true tenant isolation, that's handled at the Datris environment level, not via catalogs. See [tenant isolation](/configuration-reference) in the configuration reference.
+Catalogs don't separate customers. Separate customers need separate installs, as described on the Dev, QA and production page linked above.

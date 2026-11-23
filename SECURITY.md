@@ -68,9 +68,6 @@ laptop, wrong for anything shared. Turn both on for production.
   editor; sensitive operations such as user management, API keys, the audit log,
   and agent policy require admin. When `USE_USER_AUTH` is off, role enforcement
   is a no-op and API callers are limited only by their key's capabilities.
-- **Multi-tenancy**: when enabled, tenants are isolated at the **database level**
-  (separate Postgres databases, separate object-store buckets). This is
-  infrastructure isolation that sits beneath the user/role model above.
 - **MFA, password complexity, account lockout**: not implemented for local
   accounts. Passwords have a minimum length only (5 characters); SSO users get
   whatever their identity provider enforces.
