@@ -5,8 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.CallerVisibility
-import ai.datris.auth.TapPrincipal
+import ai.datris.auth.{CallerVisibility, CapabilityScopes, TapPrincipal, TapRunTokens}
 import ai.datris.auth.TapPrincipal.{Resolution, Resolved, Unresolved}
 import ai.datris.model.{DatrisEnvironment, PipelineConfig, ResolvedKey, TapConfig, User}
 
@@ -23,7 +22,11 @@ import scala.util.{Failure, Success, Try}
   * editor is the actor of the tap's latest version. "Limited" is
   * [[CallerVisibility.limited]]; a load into a stored pipeline is decided by
   * [[CallerVisibility.loadChecked]] and [[CallerVisibility.loadDenial]], the
-  * rule `TapAPIController.targetPipelineRefusal` applies to a caller today. */
+  * rule `TapAPIController.targetPipelineRefusal` applies to a caller today.
+  * An identity "narrows reads" ([[narrowsReads]]) when it is limited or when
+  * it lacks some read the run token carries ([[TapRunTokens.Capabilities]]),
+  * because the next release gives a run token only what the identity holds.
+  * Catalog placeholder taps ([[CatalogOps.Placeholder]]) are never reported. */
 object TapOwnerScopeScan {
 
     /** The owner is limited and may not load into the stored target (rule 3). */
@@ -35,13 +38,16 @@ object TapOwnerScopeScan {
     /** The owner no longer resolves: a revoked or unknown key, a deleted user (rule 4). */
     val OwnerUnresolved = "ownerUnresolved"
 
-    /** The owner or the last editor is limited and the tap's last run read
+    /** The owner or the last editor narrows reads and the tap's last run read
       * platform data through the callback (rule 2). */
     val ReadsNarrowed = "readsNarrowed"
 
     /** `owner` is the tap's `createdByKeyLabel` as stored (may be null);
-      * `pipeline` its `targetPipeline` (may be null). */
-    case class Finding(group: String, tap: String, pipeline: String, owner: String)
+      * `pipeline` its `targetPipeline` (may be null). `reason`, on a
+      * [[ReadsNarrowed]] finding, says in plain words why the reads narrow
+      * ("its owner cannot query data", "its last editor 'x' is limited to
+      * catalog Sales"); null otherwise. */
+    case class Finding(group: String, tap: String, pipeline: String, owner: String, reason: String = null)
 
     /** `unreadable`: names of taps that could not be checked (an owner,
       * last-editor or pipeline read failed), so "could not check" is never
@@ -52,6 +58,69 @@ object TapOwnerScopeScan {
         val empty: Result = Result(Nil, Nil)
     }
 
+    // ------------------------------------------------------------ what an identity lacks
+
+    /** Per resource of the run token: what an identity that holds none of it
+      * cannot do, and what one that holds part of it can do. */
+    private val ShortfallWords: Map[String, (String, String)] = Map(
+        "query" -> ("cannot query data", "cannot run every kind of query"),
+        "search" -> ("cannot run vector search", "can run vector search only on some collections"),
+        "metadata" -> ("cannot read metadata", "can read only some metadata"),
+        "pipeline" -> ("cannot read pipelines", "can read only some pipelines"),
+        "tap" -> ("cannot read taps", "can read only some taps")
+    )
+
+    private def actionsOf(resource: String, action: String): Seq[String] =
+        if (action == "*") CapabilityScopes.Vocabulary.toMap.getOrElse(resource, Nil) else Seq(action)
+
+    /** Plain-word phrases for each read the run token carries
+      * ([[TapRunTokens.Capabilities]]) that `rk` does not hold unscoped, in
+      * token order; empty for full access and for an identity holding every
+      * one. A partly held query names the kinds it lacks. */
+    def tokenShortfall(rk: ResolvedKey): List[String] =
+        if (rk == null || rk.isFullAccess) Nil
+        else
+            TapRunTokens.Capabilities.toList.flatMap { c =>
+                val actions = actionsOf(c.resource, c.action)
+                val missing = actions.filterNot(a => CallerVisibility.holdsUnscoped(rk, c.resource, a))
+                if (missing.isEmpty) None
+                else {
+                    val (none, some) = ShortfallWords.getOrElse(c.resource, ("cannot " + c.raw, "holds only part of " + c.raw))
+                    val heldAny = actions.exists(a => CallerVisibility.holdsAny(rk, c.resource, a))
+                    if (!heldAny) Some(none)
+                    else if (c.action == "*") Some(some + " (" + missing.mkString(", ") + ")")
+                    else Some(some)
+                }
+            }
+
+    /** How `rk` is limited, in plain words, or None when it is not limited. */
+    def limitedWords(rk: ResolvedKey): Option[String] =
+        if (rk == null || !CallerVisibility.limited(rk)) None
+        else if (rk.restrictedSession) Some("is limited to the catalogs it is granted")
+        else {
+            val scoped = (rk.capabilities ++ rk.inertCapabilities).filter(c => c.resource == "pipeline" || c.resource == "tap")
+            val catalogs = scoped.flatMap(_.scope.get("catalog")).distinct.sorted
+            val own = scoped.exists(_.scope.get("owner").contains("self"))
+            val inCatalogs =
+                if (catalogs.isEmpty) None
+                else Some((if (catalogs.size == 1) "catalog " else "catalogs ") + catalogs.mkString(", "))
+            val parts = inCatalogs.toList ++ (if (own) List("what it created") else Nil)
+            Some("is limited to " + (if (parts.isEmpty) "part of the installation" else parts.mkString(" and to ")))
+        }
+
+    /** True when a run token held to `rk` would read less than today's
+      * token: `rk` is limited, or lacks some read the token carries. */
+    def narrowsReads(rk: ResolvedKey): Boolean = rk != null && (CallerVisibility.limited(rk) || tokenShortfall(rk).nonEmpty)
+
+    /** Why `rk` narrows reads, in plain words without the subject ("is
+      * limited to catalog Sales", "cannot query data, cannot read
+      * metadata"), or None. The limited case wins. */
+    def narrowingWords(rk: ResolvedKey): Option[String] =
+        limitedWords(rk).orElse {
+            val s = tokenShortfall(rk)
+            if (s.isEmpty) None else Some(s.mkString(", "))
+        }
+
     // ------------------------------------------------------------ the six rules
 
     private def limited(r: Resolution): Boolean = r match {
@@ -59,19 +128,28 @@ object TapOwnerScopeScan {
         case _ => false
     }
 
+    private def narrows(r: Resolution): Boolean = r match {
+        case Resolved(rk) => narrowsReads(rk)
+        case _ => false
+    }
+
     private def hasTarget(t: TapConfig): Boolean = t != null && t.targetPipeline != null && t.targetPipeline.trim.nonEmpty
 
     private def contextOf(p: PipelineConfig): Map[String, String] = CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel)
 
-    /** Rule 1 (test and manual run): the caller is limited and the script
-      * read platform data through the callback. */
-    def callerReadsNarrowed(caller: Option[ResolvedKey], usedCallback: Boolean): Boolean =
-        usedCallback && caller.exists(rk => rk != null && CallerVisibility.limited(rk))
+    /** True for a catalog placeholder tap, which is never reported. */
+    def placeholder(t: TapConfig): Boolean = t != null && CatalogOps.Placeholder.is(t.name)
 
-    /** Rule 2 (unattended run): the owner or the last editor is limited and
-      * the last run read platform data through the callback. */
+    /** Rule 1 (test and manual run): the caller narrows reads
+      * ([[narrowsReads]]) and the script read platform data through the
+      * callback. */
+    def callerReadsNarrowed(caller: Option[ResolvedKey], usedCallback: Boolean): Boolean =
+        usedCallback && caller.exists(narrowsReads)
+
+    /** Rule 2 (unattended run): the owner or the last editor narrows reads
+      * and the last run read platform data through the callback. */
     def unattendedReadsNarrowed(owner: Resolution, lastEditor: Resolution, usedCallback: Boolean): Boolean =
-        usedCallback && (limited(owner) || limited(lastEditor))
+        usedCallback && (narrows(owner) || narrows(lastEditor))
 
     /** Rule 3 (unattended feed): the owner is limited and may not load into
       * the stored target. A target not stored (null) is not this rule. */
@@ -111,23 +189,32 @@ object TapOwnerScopeScan {
     private def notNull[T](what: String, v: T): Try[T] =
         if (v == null) Failure(new IllegalStateException(what + " read answered nothing")) else Success(v)
 
+    private def q(s: String): String = "'" + s + "'"
+
     /** Pure. `readPipeline`: null = not stored (may throw); `resolveOwner`: an
       * owner or last-editor label to its [[TapPrincipal.Resolution]] (may
       * throw); `lastEditor`: tap name to the actor label of the tap's latest
-      * version, or null (may throw). Each distinct label is resolved and each
-      * distinct pipeline read at most once per scan; a pipeline is read only
-      * for a tap whose owner is limited, and the last editor only for a tap
-      * whose last run used the callback and whose owner is not limited.
-      * Findings in tap order; a tap with a failed read is listed under
-      * `unreadable` and in no group. */
+      * version, or null (may throw); `narrowingPossible`: whether any
+      * identity of the install narrows reads, asked at most once and only
+      * when a last editor would be looked up (a throw counts as true). Each
+      * distinct label is resolved and each distinct pipeline read at most
+      * once per scan; a pipeline is read only for a tap whose owner is
+      * limited, and the last editor only for a tap whose last run used the
+      * callback, whose owner does not narrow reads, and when
+      * `narrowingPossible` is true (otherwise no last editor can narrow
+      * anything). Catalog placeholder taps are skipped. Findings in tap
+      * order; a tap with a failed read is listed under `unreadable` and in no
+      * group. */
     def scan(
         taps: List[TapConfig],
         readPipeline: String => PipelineConfig,
         resolveOwner: String => TapPrincipal.Resolution,
-        lastEditor: String => String
+        lastEditor: String => String,
+        narrowingPossible: () => Boolean = () => true
     ): Result = {
         val labels = mutable.HashMap[Option[String], Try[Resolution]]()
         val pipelines = mutable.HashMap[String, Try[Option[PipelineConfig]]]()
+        lazy val anyNarrowing: Boolean = Try(narrowingPossible()).getOrElse(true)
         def principal(label: String): Try[Resolution] =
             if (label == null || label.trim.isEmpty) Success(TapPrincipal.Full)
             else labels.getOrElseUpdate(Some(label), Try(resolveOwner(label)).flatMap(r => notNull("owner", r)))
@@ -136,8 +223,8 @@ object TapOwnerScopeScan {
 
         val findings = mutable.ListBuffer[Finding]()
         val unreadable = mutable.ListBuffer[String]()
-        Option(taps).getOrElse(Nil).filter(_ != null).foreach { t =>
-            def finding(group: String) = Finding(group, t.name, t.targetPipeline, t.createdByKeyLabel)
+        Option(taps).getOrElse(Nil).filter(t => t != null && !placeholder(t)).foreach { t =>
+            def finding(group: String, reason: String = null) = Finding(group, t.name, t.targetPipeline, t.createdByKeyLabel, reason)
             val checked: Try[List[Finding]] = principal(t.createdByKeyLabel).flatMap {
                 case Unresolved => Success(List(finding(OwnerUnresolved)))
                 case owner =>
@@ -148,13 +235,23 @@ object TapOwnerScopeScan {
                                 case None => List(finding(TargetMissing))
                                 case Some(p) => if (feedOutsideOwner(owner, p)) List(finding(FeedOutsideOwner)) else Nil
                             }
+                    val ownerWords = owner match {
+                        case Resolved(rk) => narrowingWords(rk)
+                        case _ => None
+                    }
                     val reads: Try[List[Finding]] =
                         if (!t.lastRunUsedCallback) Success(Nil)
-                        else if (limited(owner)) Success(List(finding(ReadsNarrowed)))
-                        else
-                            Try(lastEditor(t.name)).flatMap(principal).map { editor =>
-                                if (unattendedReadsNarrowed(owner, editor, usedCallback = true)) List(finding(ReadsNarrowed)) else Nil
+                        else if (ownerWords.isDefined) Success(List(finding(ReadsNarrowed, "its owner " + ownerWords.get)))
+                        else if (!anyNarrowing) Success(Nil)
+                        else {
+                            Try(lastEditor(t.name)).flatMap { label =>
+                                principal(label).map {
+                                    case Resolved(rk) if narrowsReads(rk) =>
+                                        List(finding(ReadsNarrowed, "its last editor " + q(label) + " " + narrowingWords(rk).getOrElse("")))
+                                    case _ => Nil
+                                }
                             }
+                        }
                     for (f <- feed; r <- reads) yield f ++ r
             }
             checked match {
@@ -181,32 +278,54 @@ object TapOwnerScopeScan {
         else if (userExists(actor)) "session:" + actor
         else actor
 
+    /** The stores a scan reads, so specs can count the reads. */
+    trait Stores {
+        def taps(): List[TapConfig]
+        def users(): List[User]
+        def keys(): APIKeyValidator.KeyDirectory
+        def readPipeline(name: String): PipelineConfig
+
+        /** The `createdBy` of the tap's newest version (None: no version). */
+        def latestAuthor(tapName: String): Option[String]
+    }
+
+    object LiveStores extends Stores {
+        private def env = DatrisEnvironment.current
+        def taps(): List[TapConfig] = TapConfigIO.readAll(env.tapTableName)
+        def users(): List[User] = UserStore.list()
+        def keys(): APIKeyValidator.KeyDirectory = APIKeyValidator.keyDirectory()
+        def readPipeline(name: String): PipelineConfig = PipelineConfigIO.read(env.pipelineTableName, name)
+        def latestAuthor(tapName: String): Option[String] = EntityVersionIO.latestAuthor(env.tapVersionTableName, tapName)
+    }
+
     /** Scan every stored tap. Listing the taps throws (the doctor check turns
       * that into a "could not check" warning). Store reads, each at most once
       * per scan and only when a tap needs it: the tap list; the user list (one
-      * read, on the first `session:` label); the API key store and its
-      * metadata (one read each, on the first key label,
-      * [[APIKeyValidator.labelResolver]]); each distinct target of a tap
-      * whose owner is limited; and the version list of each tap whose last
-      * run used the callback and whose owner is not limited. */
-    def liveScan(): Result = {
-        val env = DatrisEnvironment.current
-        val taps = TapConfigIO.readAll(env.tapTableName)
+      * read, on the first `session:` label or the first last-editor lookup);
+      * the API key store and its metadata (one read each, on the first key
+      * label or the first last-editor lookup, [[APIKeyValidator.keyDirectory]]);
+      * each distinct target of a tap whose owner is limited; and, only when
+      * some user or key of the install narrows reads, the newest version's
+      * author (one document, one field) of each tap whose last run used the
+      * callback and whose owner does not narrow reads. */
+    def liveScan(): Result = scanWith(LiveStores)
+
+    private[util] def scanWith(stores: Stores): Result = {
+        val taps = stores.taps()
         // One user-list read on first use; a failure is kept (not retried per label).
         lazy val userList: Try[Map[String, User]] =
-            Try(UserStore.list().filter(_ != null).map(u => UserStore.normalize(u.username) -> u).toMap)
+            Try(stores.users().filter(_ != null).map(u => UserStore.normalize(u.username) -> u).toMap)
         def users: Map[String, User] = userList.get
-        val keyByLabel = APIKeyValidator.labelResolver()
+        val keys = stores.keys()
         val findUser: String => Option[User] = n => users.get(UserStore.normalize(n))
+        def narrowingPossible(): Boolean =
+            users.values.exists(u => narrowsReads(APIKeyValidator.resolveFromSession(u))) || keys.all().exists(narrowsReads)
         scan(
             taps,
-            n => PipelineConfigIO.read(env.pipelineTableName, n),
-            label => TapPrincipal.resolveWith(label, findUser, keyByLabel),
-            name => {
-                val versions = EntityVersionIO.listVersions(env.tapVersionTableName, name)
-                if (versions.isEmpty) null
-                else editorLabel(versions.maxBy(_.version).createdBy, a => users.contains(UserStore.normalize(a)))
-            }
+            stores.readPipeline,
+            label => TapPrincipal.resolveWith(label, findUser, keys.byLabel),
+            name => stores.latestAuthor(name).map(a => editorLabel(a, n => users.contains(UserStore.normalize(n)))).orNull,
+            () => narrowingPossible()
         )
     }
 }

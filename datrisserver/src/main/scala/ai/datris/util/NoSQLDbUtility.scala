@@ -39,6 +39,28 @@ trait NoSQLDbUtility {
 
     def queryJSONItemsByKey(tableName: String, keyName: String, key: String): List[String]
 
+    /** The item whose `keyName` equals `key` with the highest top-level
+      * numeric `sortField`, holding only the top-level `fields`, as JSON; None
+      * when no item matches. This default reads every matching item and picks
+      * in memory; [[MongoDBUtil]] asks the store for that one document
+      * (filter, sort descending, limit 1, projection). */
+    def getNewestItemByKeyAsJSON(tableName: String, keyName: String, key: String, sortField: String, fields: Seq[String]): Option[String] = {
+        val parsed = Option(queryJSONItemsByKey(tableName, keyName, key)).getOrElse(Nil).flatMap { json =>
+            scala.util.Try(com.google.gson.JsonParser.parseString(json)).toOption.filter(_.isJsonObject).map(_.getAsJsonObject)
+        }
+        def num(o: com.google.gson.JsonObject): Double = {
+            val e = o.get(sortField)
+            if (e != null && e.isJsonPrimitive && e.getAsJsonPrimitive.isNumber) e.getAsDouble else Double.MinValue
+        }
+        if (parsed.isEmpty) None
+        else {
+            val newest = parsed.maxBy(num)
+            val out = new com.google.gson.JsonObject()
+            fields.foreach(f => if (newest.has(f)) out.add(f, newest.get(f)))
+            Some(out.toString)
+        }
+    }
+
     def getAllItemsAsJSON(tableName: String): List[String]
 
     def getPageOfItemsAsJSON(tableName: String, pageNbr: Int, maxPageSize: Int, sortField: String = null, sortDescending: Boolean = true): List[String]

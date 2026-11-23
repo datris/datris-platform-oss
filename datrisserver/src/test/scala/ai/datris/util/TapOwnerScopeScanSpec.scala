@@ -258,7 +258,10 @@ class TapOwnerScopeScanSpec extends AnyFunSuite {
         assert(!callerReadsNarrowed(Some(editor), usedCallback = true), "an unrestricted editor is not limited")
         assert(!callerReadsNarrowed(Some(admin), usedCallback = true))
         assert(!callerReadsNarrowed(Some(fullKey), usedCallback = true))
-        assert(!callerReadsNarrowed(Some(monitorKey), usedCallback = true), "a key with no scoped pipeline or tap capability is not limited")
+        // not limited, but it holds no query capability the run token carries: the next release's token
+        // holds only what the key holds, so its script's callback queries are refused
+        assert(callerReadsNarrowed(Some(monitorKey), usedCallback = true), "a key lacking a read the run token carries narrows reads")
+        assert(!callerReadsNarrowed(Some(monitorKey), usedCallback = false))
         assert(!callerReadsNarrowed(None, usedCallback = true), "no identity (auth off)")
     }
 
@@ -336,5 +339,168 @@ class TapOwnerScopeScanSpec extends AnyFunSuite {
                 s"targetPipelineRefusal ${caller.map(_.label)} -> ${t.targetPipeline}"
             )
         }
+    }
+
+    // ================================================================ review follow-ups
+
+    test("a tap whose owner is not limited but lacks a read the run token carries lands in readsNarrowed, saying so in plain words") {
+        val r = scan(
+            List(tap("monitor-reads", "monitor", "sales-orders", usedCallback = true), tap("monitor-quiet", "monitor", "sales-orders")),
+            readPipeline,
+            l => if (l == "monitor") Resolved(monitorKey) else resolveOwner(l),
+            _ => null
+        )
+        assert(groupOf(r, ReadsNarrowed) == List(("monitor-reads", "sales-orders", "monitor")), r.toString)
+        val reason = r.findings.head.reason
+        assert(reason.startsWith("its owner ") && reason.contains("cannot query data"), reason)
+        assert(!reason.contains("query:"), "plain words, not capability strings: " + reason)
+        // not a feed group: the owner is not limited, so its loads are what they are today
+        assert(groupOf(r, FeedOutsideOwner).isEmpty && groupOf(r, TargetMissing).isEmpty, r.toString)
+    }
+
+    test("a limited owner's reads finding says what it is limited to") {
+        val r = scanOf(List(
+            tap("key-reads", "sales-agent", "sales-orders", usedCallback = true),
+            tap("own-reads", "own-agent", "own-pipe", usedCallback = true),
+            tap("rita-reads", "session:rita", "sales-orders", usedCallback = true)
+        ))
+        val reasons = r.findings.filter(_.group == ReadsNarrowed).map(f => f.tap -> f.reason).toMap
+        assert(reasons("key-reads") == "its owner is limited to catalog Sales", reasons.toString)
+        assert(reasons("own-reads") == "its owner is limited to what it created", reasons.toString)
+        assert(reasons("rita-reads") == "its owner is limited to the catalogs it is granted", reasons.toString)
+    }
+
+    test("an unscoped full key and an unrestricted editor or viewer as owner or last editor are not reported") {
+        val viewer = session(User("vi", "h", User.RoleViewer, null, null, null))
+        val more = owners ++ Map("session:vi" -> Resolved(viewer))
+        val r = scan(
+            List(
+                tap("full-reads", "old-agent", "finance-ledger", usedCallback = true),
+                tap("editor-reads", "session:ed", "finance-ledger", usedCallback = true),
+                tap("viewer-reads", "session:vi", "finance-ledger", usedCallback = true)
+            ),
+            readPipeline,
+            l => if (l == null) Full else more.getOrElse(l, Unresolved),
+            _ => "session:ed"
+        )
+        assert(r.findings.isEmpty && r.unreadable.isEmpty, r.toString)
+        for (rk <- Seq(fullKey, editor, viewer, admin)) {
+            assert(!narrowsReads(rk), rk.label)
+            assert(tokenShortfall(rk).isEmpty, rk.label + ": " + tokenShortfall(rk))
+        }
+    }
+
+    test("a last editor lacking a read the run token carries narrows an administrator-owned tap's reads") {
+        val r = scan(
+            List(tap("ada-edited-by-monitor", "session:ada", "sales-orders", usedCallback = true)),
+            readPipeline,
+            l => if (l == "monitor") Resolved(monitorKey) else resolveOwner(l),
+            _ => "monitor"
+        )
+        assert(groupOf(r, ReadsNarrowed).map(_._1) == List("ada-edited-by-monitor"), r.toString)
+        assert(r.findings.head.reason.startsWith("its last editor 'monitor' cannot query data"), r.findings.head.reason)
+    }
+
+    test("tokenShortfall names what is missing in plain words, a partly held query with the kinds it lacks") {
+        val partial = key("partial", "pipeline:read", "tap:read", "metadata:read", "search:vector", "query:postgres", "query:mongodb")
+        val s = tokenShortfall(partial)
+        assert(s.size == 1 && s.head.startsWith("cannot run every kind of query (") && s.head.contains("natural") && !s.head.contains("postgres"), s.toString)
+        val scopedSearch = key("docs-search", "pipeline:read", "tap:read", "metadata:read", "search:vector:collection=docs", "query:*")
+        assert(tokenShortfall(scopedSearch) == List("can run vector search only on some collections"), tokenShortfall(scopedSearch).toString)
+        assert(tokenShortfall(key("nothing")) == List(
+            "cannot query data",
+            "cannot run vector search",
+            "cannot read metadata",
+            "cannot read pipelines",
+            "cannot read taps"
+        ))
+    }
+
+    test("a catalog placeholder tap is not listed, even when its creator was deleted") {
+        val placeholder = tap(CatalogOps.Placeholder.name("Sales"), "session:departed", null, usedCallback = true)
+        val keyPlaceholder = tap(CatalogOps.Placeholder.name("Finance"), "gone-agent", "finance-ledger", usedCallback = true)
+        val r = scanOf(List(placeholder, keyPlaceholder, tap("orphan-key", "gone-agent", "sales-orders")))
+        assert(r.findings.map(_.tap) == List("orphan-key"), r.toString)
+        assert(r.unreadable.isEmpty, r.toString)
+    }
+
+    // ---------------------------------------------------------------- the live wiring, over counting stores
+
+    private class CountingStores(tapList: List[TapConfig], userList: List[User], keyList: List[ResolvedKey], authors: Map[String, String] = Map.empty)
+        extends Stores {
+        var versionReads = 0
+        var userReads = 0
+        var keyListReads = 0
+        def taps(): List[TapConfig] = tapList
+        def users(): List[User] = { userReads += 1; userList }
+        def keys(): APIKeyValidator.KeyDirectory = new APIKeyValidator.KeyDirectory {
+            def byLabel(label: String): Option[ResolvedKey] = keyList.find(_.label == label)
+            def all(): List[ResolvedKey] = { keyListReads += 1; keyList }
+        }
+        def readPipeline(name: String): PipelineConfig = pipelines.get(name).orNull
+        def latestAuthor(tapName: String): Option[String] = { versionReads += 1; authors.get(tapName) }
+    }
+
+    private val adaUser = User("ada", "h", User.RoleAdmin, null, null, null)
+    private val edUser = User("ed", "h", User.RoleEditor, null, null, null)
+    private val ritaUser = User("rita", "h", User.RoleEditor, null, null, null, restricted = true, catalogGrants = grants("Sales" -> "edit"))
+    private val oldAgent = ResolvedKey(None, "old-agent", Seq(Capability.FullAccess), isLegacyFullAccess = true)
+
+    test("an install with only unrestricted identities makes zero version reads in a scan") {
+        val taps = (1 to 5).toList.map(i => tap("t" + i, if (i % 2 == 0) "session:ed" else "old-agent", "finance-ledger", usedCallback = true))
+        val stores = new CountingStores(taps, List(adaUser, edUser), List(oldAgent))
+        val r = scanWith(stores)
+        assert(r.findings.isEmpty && r.unreadable.isEmpty, r.toString)
+        assert(stores.versionReads == 0, "no last editor can narrow anything: " + stores.versionReads)
+        assert(stores.userReads == 1 && stores.keyListReads == 1, (stores.userReads, stores.keyListReads).toString)
+    }
+
+    test("with one identity that narrows reads, the last editor is read once per tap that used the callback, from the newest version's author") {
+        val taps = List(
+            tap("ada-edited-by-rita", "session:ada", "sales-orders", usedCallback = true),
+            tap("ada-quiet", "session:ada", "sales-orders"),
+            tap("ada-edited-by-ed", "session:ada", "sales-orders", usedCallback = true)
+        )
+        // VersionActor stamps the bare username of a signed-in user
+        val stores = new CountingStores(taps, List(adaUser, edUser, ritaUser), List(fullKey), Map("ada-edited-by-rita" -> "rita", "ada-edited-by-ed" -> "ed"))
+        val r = scanWith(stores)
+        assert(groupOf(r, ReadsNarrowed).map(_._1) == List("ada-edited-by-rita"), r.toString)
+        assert(stores.versionReads == 2, stores.versionReads.toString)
+        // a key lacking a token read also makes the lookup matter
+        val keyStores = new CountingStores(taps, List(adaUser), List(fullKey, monitorKey), Map("ada-edited-by-ed" -> "monitor"))
+        val kr = scanWith(keyStores)
+        assert(groupOf(kr, ReadsNarrowed).map(_._1) == List("ada-edited-by-ed"), kr.toString)
+        assert(keyStores.versionReads == 2, keyStores.versionReads.toString)
+    }
+
+    test("a scan whose key list cannot be read still looks up the last editor (could not tell is not 'nothing can narrow')") {
+        val taps = List(tap("ada-edited-by-rita", "session:ada", "sales-orders", usedCallback = true))
+        val stores = new CountingStores(taps, List(adaUser, ritaUser), Nil, Map("ada-edited-by-rita" -> "session:rita")) {
+            override def keys(): APIKeyValidator.KeyDirectory = new APIKeyValidator.KeyDirectory {
+                def byLabel(label: String): Option[ResolvedKey] = None
+                def all(): List[ResolvedKey] = throw new IllegalStateException("key store down")
+            }
+        }
+        // the restricted user already makes it possible, so the key list is not needed
+        assert(groupOf(scanWith(stores), ReadsNarrowed).map(_._1) == List("ada-edited-by-rita"))
+        val noUsers = new CountingStores(taps, List(adaUser), Nil, Map("ada-edited-by-rita" -> "flaky-agent")) {
+            override def keys(): APIKeyValidator.KeyDirectory = new APIKeyValidator.KeyDirectory {
+                def byLabel(label: String): Option[ResolvedKey] = throw new IllegalStateException("key store down")
+                def all(): List[ResolvedKey] = throw new IllegalStateException("key store down")
+            }
+        }
+        val r = scanWith(noUsers)
+        assert(noUsers.versionReads == 1, "the lookup is made: " + noUsers.versionReads)
+        assert(r.unreadable == List("ada-edited-by-rita"), "the editor could not be resolved, so the tap could not be checked: " + r)
+    }
+
+    test("editorLabel: session labels stay, a stored user's bare name becomes a session label, the fallbacks name nobody, the rest are key labels") {
+        val users = Set("rita", "ed")
+        val exists: String => Boolean = users.contains
+        assert(editorLabel("session:rita", exists) == "session:rita")
+        assert(editorLabel("session:departed", exists) == "session:departed")
+        assert(editorLabel("rita", exists) == "session:rita")
+        assert(editorLabel("sales-agent", exists) == "sales-agent")
+        for (none <- Seq(null, "", "  ", "system", "agent")) assert(editorLabel(none, exists) == null, String.valueOf(none))
     }
 }

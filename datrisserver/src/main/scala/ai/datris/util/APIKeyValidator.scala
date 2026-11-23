@@ -284,15 +284,56 @@ object APIKeyValidator {
     def labelResolver(): String => Option[ResolvedKey] = {
         val o = resolveByLabelOverride
         if (o != null) return o
+        val d = keyDirectory()
+        label => d.byLabel(label)
+    }
+
+    /** The issued keys for one scan: [[byLabel]] is [[resolveByLabel]];
+      * [[all]] is every key that resolves (not revoked), sorted by label. */
+    trait KeyDirectory {
+        def byLabel(label: String): Option[ResolvedKey]
+        def all(): List[ResolvedKey]
+    }
+
+    /** [[KeyDirectory]] over one read of the key store and one of its
+      * metadata (each on first need, a failed read kept, as
+      * [[labelResolver]]). With [[resolveByLabelOverride]] set, `byLabel` is
+      * the override and `all` throws (the keys cannot be listed). With
+      * multi-tenant routing every key is legacy full access, so `all` is
+      * empty (no key narrows anything). */
+    def keyDirectory(): KeyDirectory = {
+        val o = resolveByLabelOverride
+        if (o != null)
+            return new KeyDirectory {
+                def byLabel(label: String): Option[ResolvedKey] = o(label)
+                def all(): List[ResolvedKey] = throw new IllegalStateException("the keys cannot be listed")
+            }
         if (DatrisEnvironment.values.multiTenant)
-            return label =>
+            return new KeyDirectory {
+                def byLabel(label: String): Option[ResolvedKey] =
+                    if (label == null || label.isEmpty) None
+                    else Some(ResolvedKey(Some(label), label, Seq(Capability.FullAccess), isLegacyFullAccess = true))
+                def all(): List[ResolvedKey] = Nil
+            }
+        directoryOver(() => readKeysMap(), () => readMetadataMap())
+    }
+
+    /** Pure core of [[keyDirectory]]: `readKeys` and `readMetadata` are each
+      * called at most once, on first need; a failure is kept, so every later
+      * call throws it again and a store failure is never answered as an
+      * unknown key. */
+    private[util] def directoryOver(readKeys: () => Map[String, String], readMetadata: () => Map[String, String]): KeyDirectory = {
+        lazy val keys: Try[Map[String, String]] = Try(readKeys())
+        lazy val metadata: Try[Map[String, String]] = Try(readMetadata())
+        new KeyDirectory {
+            def byLabel(label: String): Option[ResolvedKey] =
                 if (label == null || label.isEmpty) None
-                else Some(ResolvedKey(Some(label), label, Seq(Capability.FullAccess), isLegacyFullAccess = true))
-        lazy val keys: Try[Map[String, String]] = Try(readKeysMap())
-        lazy val metadata: Try[Map[String, String]] = Try(readMetadataMap())
-        label =>
-            if (label == null || label.isEmpty) None
-            else resolveLabelAgainst(label, keys.get, metadata.get)
+                else resolveLabelAgainst(label, keys.get, metadata.get)
+            def all(): List[ResolvedKey] = {
+                val k = keys.get
+                k.keys.toList.sorted.flatMap(l => resolveLabelAgainst(l, k, metadata.get))
+            }
+        }
     }
 
     /** Pure core of [[resolveByLabel]]: the same answer [[resolveAgainst]]

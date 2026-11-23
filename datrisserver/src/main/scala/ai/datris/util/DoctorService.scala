@@ -47,12 +47,23 @@ object DoctorService {
         detail: String,
         remediation: String,
         surface: String = "server",
-        ms: Long = 0L
+        ms: Long = 0L,
+        /** The detail with no item, user or key named (counts only), for a
+          * caller that does not see the whole installation
+          * ([[Report.withoutNames]]). Null: the detail names nothing such a
+          * caller may not see. Never serialized. */
+        namelessDetail: String = null
     )
 
     case class Report(mode: String, surface: Map[String, String], checks: Seq[CheckResult]) {
         def summary: Map[String, Int] =
             Seq(StatusOk, StatusWarn, StatusError, StatusSkip).map(s => s -> checks.count(_.status == s)).toMap
+
+        /** The report for a caller that does not see the whole installation:
+          * every row that has a [[CheckResult.namelessDetail]] shows it in
+          * place of its detail. Status, severity and remediation unchanged. */
+        def withoutNames: Report =
+            copy(checks = checks.map(c => if (c.namelessDetail == null) c else c.copy(detail = c.namelessDetail)))
 
         def toJson: String = {
             val root = new java.util.LinkedHashMap[String, Any]()
@@ -550,34 +561,42 @@ object DoctorService {
             val findings = Option(result).map(_.findings).getOrElse(Nil)
             val unreadable = Option(result).map(_.unreadable).getOrElse(Nil)
             if (findings.isEmpty && unreadable.isEmpty) return ok("no tap reads or feeds beyond its owner's access")
-            val unreadableText =
+            def unreadableText(names: Boolean) =
                 if (unreadable.isEmpty) ""
                 else
-                    "could not check " + unreadable.size + " tap(s) (an owner, editor or pipeline read failed): " +
-                        TapOwnerScopeCheck.named(unreadable)
-            if (findings.isEmpty) return warn(unreadableText, unreadableFix)
-            val groups = TapOwnerScopeCheck.Groups.flatMap { case (group, what) =>
-                val in = findings.filter(_.group == group)
-                if (in.isEmpty) None
-                else {
-                    val list =
-                        in.map(f => f.tap + " -> " + Option(f.pipeline).filter(_.nonEmpty).getOrElse("(no target)") + " (" + String.valueOf(f.owner) + ")")
-                    Some(what + " (" + in.size + "): " + TapOwnerScopeCheck.named(list))
+                    "could not check " + unreadable.size + " tap(s) (an owner, editor or pipeline read failed)" +
+                        (if (names) ": " + TapOwnerScopeCheck.named(unreadable) else "")
+            if (findings.isEmpty)
+                return warn(unreadableText(names = true), unreadableFix).copy(namelessDetail = unreadableText(names = false) + TapOwnerScopeCheck.NamesHidden)
+            def detail(names: Boolean): String = {
+                val groups = TapOwnerScopeCheck.Groups.flatMap { case (group, what) =>
+                    val in = findings.filter(_.group == group)
+                    if (in.isEmpty) None
+                    else if (!names) Some(what + " (" + in.size + ")")
+                    else {
+                        val list = in.map { f =>
+                            f.tap + " -> " + Option(f.pipeline).filter(_.nonEmpty).getOrElse("(no target)") + " (" + String.valueOf(f.owner) + ")" +
+                                Option(f.reason).filter(_.nonEmpty).map(" " + _).getOrElse("")
+                        }
+                        Some(what + " (" + in.size + "): " + TapOwnerScopeCheck.named(list))
+                    }
                 }
+                val taps = findings.map(_.tap).distinct.size
+                val also = unreadableText(names)
+                taps + " tap(s) will read or feed less in the next release, which holds each tap to its owner's access " +
+                    "(nothing changes in this release; callback reads are known only for taps run since the upgrade). " +
+                    groups.mkString("; ") + (if (also.isEmpty) "" else "; also " + also) + (if (names) "" else TapOwnerScopeCheck.NamesHidden)
             }
-            val taps = findings.map(_.tap).distinct.size
-            val detail = taps + " tap(s) will read or feed less in the next release, which holds each tap to its owner's access " +
-                "(nothing changes in this release; callback reads are known only for taps run since the upgrade). " +
-                groups.mkString("; ") + (if (unreadableText.isEmpty) "" else "; also " + unreadableText)
             val fix =
                 "A tap's owner is the user or API key that created it and is kept on every later save. " +
                     "Owner may not feed the target: grant the owning user edit on the target pipeline's catalog, or point the tap at a pipeline its owner may load into; " +
                     "for a key-owned tap, recreate the tap (delete it and save it again) as a user or key that may load into the target. " +
                     "Target pipeline missing: create the pipeline before the tap. " +
                     "Owner no longer exists: recreate the tap as a current user or key. " +
-                    "Reads beyond the owner's access: give the owner (and the last editor) read on what the script reads, or recreate the tap as an identity that has it." +
-                    (if (unreadableText.isEmpty) "" else " " + unreadableFix)
-            warn(detail, fix)
+                    "Reads held to the owner's access: give the owning user (and the last editor) access to what the script reads; " +
+                    "API keys cannot be edited, so for a key that is limited or lacks a read the script makes, recreate the tap as a user or key that holds those reads." +
+                    (if (unreadable.isEmpty) "" else " " + unreadableFix)
+            warn(detail(names = true), fix).copy(namelessDetail = detail(names = false))
         }
     }
 
@@ -586,6 +605,9 @@ object DoctorService {
         /** Taps named per group (and unreadable taps named) before "and N more". */
         val PerGroup = 10
 
+        /** Ends the counts-only detail shown to a caller that does not see the whole installation. */
+        val NamesHidden = " (tap, pipeline and owner names are shown only to a caller with access to the whole installation)"
+
         /** Report order, with what stops for each group in the next release. */
         val Groups: Seq[(String, String)] = Seq(
             TapOwnerScopeScan.FeedOutsideOwner -> "scheduled runs will stop feeding a pipeline the owner may not load into",
@@ -593,7 +615,7 @@ object DoctorService {
                 "the target pipeline does not exist; a save by a key whose loads are checked will be refused until it does, and scheduled runs will feed it only if the owner may load into it",
             TapOwnerScopeScan.OwnerUnresolved -> "the owner no longer exists; scheduled runs will feed nothing and callback reads will stay in the tap's own catalog",
             TapOwnerScopeScan.ReadsNarrowed ->
-                "the script reads through the callback; its reads will be held to the owner's access narrowed by the last editor's, and reads outside it refused"
+                "the script reads through the callback while its owner or last editor is limited or lacks a read the callback offers; its reads will be held to the owner's access narrowed by the last editor's, and reads outside it refused"
         )
 
         private[util] def named(items: List[String]): String =
@@ -1043,6 +1065,48 @@ object DoctorService {
         }
     }
 
+    /** One run of `body` per key at a time, on its own daemon thread named
+      * `threadName`, shared by every caller that asks while it runs: each
+      * caller waits at most `timeoutMs` (from its own call) for the shared
+      * result, then gets an IllegalStateException saying the run did not
+      * finish in time (the run itself goes on, and a call after it ends
+      * starts a new one). A failure of `body` is rethrown to every waiting
+      * caller as an IllegalStateException carrying its message. `onWait` is
+      * called just before a caller starts waiting (a spec seam). */
+    final class SharedRun[T](threadName: String, timeoutMs: Long, onWait: () => Unit = () => ()) {
+        private val inflight = new java.util.concurrent.ConcurrentHashMap[String, java.util.concurrent.FutureTask[T]]()
+
+        private final class Run(key: String, body: () => T) extends java.util.concurrent.FutureTask[T](() => body()) {
+            override protected def done(): Unit = { inflight.remove(key, this); () }
+        }
+
+        def get(key: String, body: () => T): T = {
+            val mine = new Run(key, body)
+            val running = inflight.putIfAbsent(key, mine)
+            val task: java.util.concurrent.FutureTask[T] =
+                if (running != null) running
+                else {
+                    val thread = new Thread(mine, threadName)
+                    thread.setDaemon(true)
+                    try thread.start()
+                    catch { case e: Throwable => inflight.remove(key, mine); throw e }
+                    mine
+                }
+            onWait()
+            try task.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            catch {
+                case _: java.util.concurrent.TimeoutException =>
+                    throw new IllegalStateException("the scan did not finish within " + SharedRun.limitText(timeoutMs))
+                case e: java.util.concurrent.ExecutionException if e.getCause != null =>
+                    throw new IllegalStateException(e.getCause.getMessage, e.getCause)
+            }
+        }
+    }
+
+    object SharedRun {
+        private[util] def limitText(ms: Long): String = if (ms >= 1000L && ms % 1000L == 0L) (ms / 1000L) + " s" else ms + " ms"
+    }
+
     // ------------------------------------------------------------ assembly
 
     /** Every server-side check, in report order. */
@@ -1238,36 +1302,25 @@ object DoctorService {
         /** Longest a doctor run (startup included) waits for the tap owner scan. */
         val TapOwnerScanTimeoutMs = 15000L
 
-        private val tapOwnerScanRunning = new java.util.concurrent.atomic.AtomicBoolean(false)
+        private val tapOwnerScan = new SharedRun[TapOwnerScopeScan.Result]("doctor-tap-owner-scan", TapOwnerScanTimeoutMs)
 
-        /** [[TapOwnerScopeScan.liveScan]] on its own daemon thread, waited for
-          * at most [[TapOwnerScanTimeoutMs]]; past that (a slow store) or
-          * while an earlier scan is still running, it throws and the check
-          * says it could not check. So a slow key or user store never holds
-          * startup or a doctor call longer than that, and scans never pile up. */
+        /** [[TapOwnerScopeScan.liveScan]] through [[SharedRun]]: on its own
+          * daemon thread, one scan per environment at a time, every caller
+          * waiting at most [[TapOwnerScanTimeoutMs]] for it. A call made while
+          * a scan is running waits on that scan's result. Past the limit (a
+          * slow store) it throws and the check says it could not check. So a
+          * slow key or user store never holds startup or a doctor call longer
+          * than that, and scans never pile up. */
         override def tapOwnerScopeScan(): TapOwnerScopeScan.Result = {
-            if (!tapOwnerScanRunning.compareAndSet(false, true))
-                throw new IllegalStateException("an earlier tap owner scan is still running")
             val env = DatrisEnvironment.current
-            val task = new java.util.concurrent.FutureTask[TapOwnerScopeScan.Result](() => {
-                ai.datris.model.TenantContext.set(env)
-                try TapOwnerScopeScan.liveScan()
-                finally {
-                    ai.datris.model.TenantContext.clear()
-                    tapOwnerScanRunning.set(false)
+            tapOwnerScan.get(
+                String.valueOf(env.environment),
+                () => {
+                    ai.datris.model.TenantContext.set(env)
+                    try TapOwnerScopeScan.liveScan()
+                    finally ai.datris.model.TenantContext.clear()
                 }
-            })
-            val thread = new Thread(task, "doctor-tap-owner-scan")
-            thread.setDaemon(true)
-            try thread.start()
-            catch { case e: Throwable => tapOwnerScanRunning.set(false); throw e }
-            try task.get(TapOwnerScanTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-            catch {
-                case _: java.util.concurrent.TimeoutException =>
-                    throw new IllegalStateException("the scan did not finish within " + (TapOwnerScanTimeoutMs / 1000) + " s")
-                case e: java.util.concurrent.ExecutionException if e.getCause != null =>
-                    throw new IllegalStateException(e.getCause.getMessage, e.getCause)
-            }
+            )
         }
 
         override def apiKeyCapabilities(): List[(String, Seq[String])] = {

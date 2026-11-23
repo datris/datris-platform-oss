@@ -9,6 +9,8 @@ import ai.datris.model.AIConfig
 import ai.datris.util.DoctorService._
 import org.scalatest.funsuite.AnyFunSuite
 
+import scala.collection.JavaConverters._
+
 /** Each doctor check against a fake probe: the rule that fires, the status it
   * fires at, and the remediation text an operator will actually see. */
 class DoctorServiceSpec extends AnyFunSuite {
@@ -1271,5 +1273,87 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(r.detail.length < 4000, "detail is " + r.detail.length + " chars")
         assert(r.detail.contains("500"), "states the total: " + r.detail.take(300))
         assert(r.detail.contains("tap-number-1 -> pipeline-number-1 (session:user-1)"), "names the first ones: " + r.detail.take(300))
+    }
+
+    // tap.owner_scope review follow-ups: what the row shows a caller that does not
+    // see the whole installation, the reason words, and the shared in-flight scan.
+
+    test("tap.owner_scope carries a counts-only detail naming no tap, pipeline, user or key") {
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings, List("t-flaky")))).run()
+        assert(r.namelessDetail != null, r.toString)
+        for (f <- ownerFindings; name <- Seq(f.tap, f.pipeline, f.owner)) assert(!r.namelessDetail.contains(name), name + " in " + r.namelessDetail)
+        assert(!r.namelessDetail.contains("t-flaky"), r.namelessDetail)
+        assert(r.namelessDetail.contains("(2)") && r.namelessDetail.contains("(1)"), "counts per group: " + r.namelessDetail)
+        assert(r.namelessDetail.contains("could not check 1 tap(s)"), r.namelessDetail)
+        assert(r.namelessDetail.contains("next release"), r.namelessDetail)
+        val onlyUnreadable = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(Nil, List("t-flaky")))).run()
+        assert(onlyUnreadable.namelessDetail != null && !onlyUnreadable.namelessDetail.contains("t-flaky"), onlyUnreadable.toString)
+        // the report keeps the named detail unless asked for the nameless one
+        val report = Report("full", Map.empty, Seq(r, CheckResult("other.check", "warn", "warn", "names other things", "")))
+        assert(report.checks.head.detail.contains("rita-finance"))
+        val nameless = report.withoutNames
+        assert(nameless.checks.head.detail == r.namelessDetail && nameless.checks.head.status == r.status && nameless.checks.head.remediation == r.remediation)
+        assert(nameless.checks(1).detail == "names other things", "a row without a nameless detail is unchanged")
+        assert(!nameless.toJson.contains("namelessDetail") && !report.toJson.contains("namelessDetail"), "never serialized")
+    }
+
+    test("tap.owner_scope names why a tap's reads narrow") {
+        val f = TapOwnerScopeScan.Finding(TapOwnerScopeScan.ReadsNarrowed, "monitor-reads", "sales-orders", "monitor", "its owner cannot query data")
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(List(f), Nil))).run()
+        assert(r.detail.contains("monitor-reads -> sales-orders (monitor) its owner cannot query data"), r.detail)
+        assert(!r.namelessDetail.contains("cannot query data"), "the reason names no identity but stays with the names: " + r.namelessDetail)
+    }
+
+    private def latch() = new java.util.concurrent.CountDownLatch(1)
+    private def await(l: java.util.concurrent.CountDownLatch): Boolean = l.await(10, java.util.concurrent.TimeUnit.SECONDS)
+
+    test("SharedRun: two overlapping calls share one run and get the same result") {
+        val waiting = new java.util.concurrent.CountDownLatch(2)
+        val release = latch()
+        val runs = new java.util.concurrent.atomic.AtomicInteger(0)
+        val shared = new SharedRun[TapOwnerScopeScan.Result]("spec-shared-run", 10000L, () => waiting.countDown())
+        val result = TapOwnerScopeScan.Result(ownerFindings, Nil)
+        val body = () => { runs.incrementAndGet(); await(release); result }
+        val answers = new java.util.concurrent.ConcurrentLinkedQueue[AnyRef]()
+        val callers = (1 to 2).map(_ =>
+            new Thread(() =>
+                answers.add(try shared.get("env", body)
+                catch { case e: Exception => e })
+            )
+        )
+        callers.foreach(_.start())
+        assert(await(waiting), "both callers are waiting")
+        release.countDown()
+        callers.foreach(_.join(10000))
+        assert(runs.get == 1, "one scan for both: " + runs.get)
+        assert(answers.size == 2 && answers.asScala.forall(_ eq result), answers.toString)
+        // the run has ended, so the next call starts a new one
+        assert(shared.get("env", () => { runs.incrementAndGet(); TapOwnerScopeScan.Result.empty }) == TapOwnerScopeScan.Result.empty)
+        assert(runs.get == 2)
+    }
+
+    test("SharedRun: a caller waits at most the time limit, and a caller joining a running scan has the same limit") {
+        val release = latch()
+        val started = latch()
+        val shared = new SharedRun[String]("spec-shared-run-limit", 20L)
+        val slow = () => { started.countDown(); await(release); "late" }
+        val first = intercept[IllegalStateException](shared.get("env", slow))
+        assert(first.getMessage == "the scan did not finish within 20 ms", first.getMessage)
+        assert(await(started))
+        val second = intercept[IllegalStateException](shared.get("env", () => "never runs: the slow scan is still in flight"))
+        assert(second.getMessage == "the scan did not finish within 20 ms", second.getMessage)
+        release.countDown()
+    }
+
+    test("SharedRun: a failing run is rethrown to its caller with its message, and the next call runs again") {
+        val shared = new SharedRun[String]("spec-shared-run-fail", 10000L)
+        val e = intercept[IllegalStateException](shared.get("env", () => throw new RuntimeException("mongo down")))
+        assert(e.getMessage == "mongo down")
+        assert(shared.get("env", () => "ok") == "ok")
+        assert(SharedRun.limitText(15000L) == "15 s" && SharedRun.limitText(20L) == "20 ms")
+    }
+
+    test("LiveProbes waits 15 s at most for the tap owner scan") {
+        assert(LiveProbes.TapOwnerScanTimeoutMs == 15000L)
     }
 }

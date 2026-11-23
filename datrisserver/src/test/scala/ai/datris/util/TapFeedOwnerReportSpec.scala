@@ -189,6 +189,8 @@ class TapFeedOwnerReportSpec extends AnyFunSuite with BeforeAndAfterEach {
         TapScriptRunner.executeOverride = (_: TapConfig, _: String, _: String) => script()
         try {
             val result = TapRunner.run(tap, mode = mode, trigger = trigger, scriptOverride = "# " + ScriptMarker + "\n")
+            // the after-feed report runs on the report's own thread
+            assert(TapOwnerScopeReport.awaitIdle(), "the report thread drained")
             val warns = appender.list.asScala.toList.filter(_.getLevel == Level.WARN).map(_.getFormattedMessage)
             (fx, result, warns)
         } finally {
@@ -433,5 +435,96 @@ class TapFeedOwnerReportSpec extends AnyFunSuite with BeforeAndAfterEach {
         val t = tapNamed("stamp-test", null)
         val (fx, r, _) = runWith(t, fine, mode = "test", trigger = "manual", script = () => stagedResult(usedCallback = true))
         assert(r.error == null && fx.tapWrites.isEmpty)
+    }
+
+    // ================================================================ review follow-ups: nothing held on the run thread
+
+    test("the run completes, with its stamps, run log and the scheduler's run audit row, while the owner lookup is blocked") {
+        val t = tapNamed("blocked-lookup-feed", "session:rita")
+        val entered = new java.util.concurrent.CountDownLatch(1)
+        val release = new java.util.concurrent.CountDownLatch(1)
+        val fx = new FakeEffects(_ => {
+            entered.countDown()
+            release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            Resolved(rita)
+        })
+        val savedEffects = TapRunner.effects
+        val savedExec = TapScriptRunner.executeOverride
+        TapRunner.effects = fx
+        TapScriptRunner.executeOverride = (_: TapConfig, _: String, _: String) => stagedResult()
+        try {
+            val result = TapRunner.run(t, mode = "run", trigger = "cron", scriptOverride = "# x\n")
+            // what TapScheduler.fireCronRun writes right after the run returns
+            AuditLog.system("tap", "run", "tap", t.name, new com.google.gson.JsonObject())
+            assert(entered.await(10, java.util.concurrent.TimeUnit.SECONDS), "the lookup started on the report thread")
+            assert(release.getCount == 1, "and is still blocked")
+            assert(result.error == null && fx.submits.size == 1, String.valueOf(result.error))
+            assert(fx.tapWrites.map(_.lastRunStatus).toList == List("running", "success"))
+            assert(fx.runLogs.map(_.status).toList == List("success"))
+            assert(audit.synchronized(audit.toList).exists(e => e.action == "run" && e.resourceName.contains(t.name)), "the run's audit row")
+            assert(ownerRows(t.name).isEmpty, "the report is not written yet")
+        } finally {
+            release.countDown()
+            TapRunner.effects = savedEffects
+            TapScriptRunner.executeOverride = savedExec
+        }
+        assert(TapOwnerScopeReport.awaitIdle())
+        assert(ownerRows(t.name).map(_.action) == List("feed-outside-owner-scope"), "the report follows once the lookup answers: " + ownerRows(t.name))
+    }
+
+    test("a full report queue drops the report without throwing, and the run is unchanged") {
+        val entered = new java.util.concurrent.CountDownLatch(1)
+        val release = new java.util.concurrent.CountDownLatch(1)
+        assert(TapOwnerScopeReport.enqueue(() => { entered.countDown(); release.await(10, java.util.concurrent.TimeUnit.SECONDS); () }))
+        try {
+            assert(entered.await(10, java.util.concurrent.TimeUnit.SECONDS), "the report thread is busy")
+            val accepted = (1 to TapOwnerScopeReport.QueueCapacity).count(_ => TapOwnerScopeReport.enqueue(() => ()))
+            assert(accepted == TapOwnerScopeReport.QueueCapacity, accepted.toString)
+            assert(!TapOwnerScopeReport.enqueue(() => ()), "the queue is full: the offer is refused")
+            // a scheduled run that reports while the queue is full: the report is dropped, the run is as before
+            val t = tapNamed("queue-full-feed", "session:rita")
+            val fx = new FakeEffects({ case "session:rita" => Resolved(rita); case _ => Full })
+            val savedEffects = TapRunner.effects
+            val savedExec = TapScriptRunner.executeOverride
+            TapRunner.effects = fx
+            TapScriptRunner.executeOverride = (_: TapConfig, _: String, _: String) => stagedResult()
+            try {
+                val r = TapRunner.run(t, mode = "run", trigger = "cron", scriptOverride = "# x\n")
+                assert(r.error == null && fx.submits.size == 1, String.valueOf(r.error))
+                assert(fx.tapWrites.map(_.lastRunStatus).toList == List("running", "success"))
+            } finally {
+                TapRunner.effects = savedEffects
+                TapScriptRunner.executeOverride = savedExec
+            }
+            TapOwnerScopeReport.afterScheduledFeed(t, _ => throw new IllegalStateException("never called"), _ => null)
+        } finally release.countDown()
+        assert(TapOwnerScopeReport.awaitIdle())
+        assert(ownerRows("queue-full-feed").isEmpty, "the dropped report wrote nothing")
+    }
+
+    test("a failed owner lookup is not retried on the tap's next run the same day, and is retried the next day") {
+        val saved = TapOwnerScopeReport.today
+        val day = new java.util.concurrent.atomic.AtomicLong(30000L)
+        TapOwnerScopeReport.today = () => day.get
+        try {
+            val t = tapNamed("outage-feed", "session:rita")
+            val failing: String => Resolution = _ => throw new IllegalStateException("user store down")
+            val (fx1, r1, _) = runWith(t, failing)
+            val (fx2, r2, _) = runWith(t, failing)
+            assert(r1.error == null && r2.error == null)
+            assert(fx1.ownerReads.get == 1 && fx2.ownerReads.get == 0, (fx1.ownerReads.get, fx2.ownerReads.get).toString)
+            day.incrementAndGet()
+            val (fx3, _, _) = runWith(t, { case "session:rita" => Resolved(rita); case _ => Full })
+            assert(fx3.ownerReads.get == 1, "a new day asks again")
+            assert(ownerRows(t.name).map(_.action) == List("feed-outside-owner-scope"), ownerRows(t.name).toString)
+        } finally TapOwnerScopeReport.today = saved
+    }
+
+    test("a catalog placeholder tap is never reported after a feed") {
+        val t = tapNamed(CatalogOps.Placeholder.name("Sales"), "gone-agent")
+        val (fx, r, warns) = runWith(t, _ => Unresolved)
+        assert(r.error == null)
+        assert(fx.ownerReads.get == 0, "no owner lookup for a placeholder")
+        assert(ownerRows(t.name).isEmpty && !warns.exists(_.contains(t.name)))
     }
 }

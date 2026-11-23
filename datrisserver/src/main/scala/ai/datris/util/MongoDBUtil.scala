@@ -126,6 +126,19 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility with SessionDa
             .toList
     }
 
+    override def getNewestItemByKeyAsJSON(tableName: String, keyName: String, key: String, sortField: String, fields: Seq[String]): Option[String] = {
+        val collection = database.getCollection(tableName)
+        val projection = new Document("_id", 0)
+        fields.foreach(f => projection.append(f, 1))
+        Option(
+            collection.find(Filters.eq(keyName, key))
+                .sort(new Document(sortField, -1))
+                .limit(1)
+                .projection(projection)
+                .first()
+        ).map(_.toJson(jsonSettings))
+    }
+
     override def getAllItemsAsJSON(tableName: String): List[String] = {
         val collection = database.getCollection(tableName)
         collection.find()
