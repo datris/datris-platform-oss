@@ -236,7 +236,7 @@ OIDC_REDIRECT_URI=http://localhost:4200/api/v1/auth/oidc/callback
 Then `docker compose up -d --force-recreate datris`. `curl -s http://localhost:8080/api/v1/version` now reports `"oidcEnabled": "true"`. Sign in as `admin` with the password, add `alice@example.com` as editor on **Configuration → Users**, sign out, press **Sign in with SSO** and log in at Keycloak as `alice` / `alice-pass`. To clean up: `docker rm -f keycloak` and remove the `OIDC_*` lines from `.env`.
 
 <Note>
-SSO is single-tenant: with `MULTI_TENANT=true` it is not verified and signs people in to the default environment's users. One identity provider per install.
+One identity provider per install.
 </Note>
 
 ## Reverting
@@ -256,4 +256,4 @@ Set `USE_USER_AUTH=false` (or remove the line) and recreate the Datris container
 
 - [API Keys](/api-keys) — the paired flag. Required for any deployment where the UI or CLI talks to a real install.
 - [Configuring Claude](/configuring-claude) — connecting AI agents via MCP. MCP clients use the API-key path, not user auth.
-- [Configuration Reference](/configuration-reference) — the underlying `useUserAuth`, `useApiKeys`, `multiTenant` and `oidc.*` keys in `application.yaml`.
+- [Configuration Reference](/configuration-reference) — the underlying `useUserAuth`, `useApiKeys` and `oidc.*` keys in `application.yaml`.

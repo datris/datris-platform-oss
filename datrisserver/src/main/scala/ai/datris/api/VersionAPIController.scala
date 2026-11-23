@@ -48,7 +48,9 @@ class VersionAPIController {
                 "gitHeadCommit" -> BuildInfo.gitHeadCommit,
                 "builtAtMillis" -> BuildInfo.builtAtMillis.toString,
                 "environment" -> DatrisEnvironment.current.environment,
-                "multiTenant" -> DatrisEnvironment.current.multiTenant.toString,
+                // Deprecated: multi-tenant mode is retired (a server with it on does
+                // not start), so this is always "false". Kept for existing readers.
+                "multiTenant" -> "false",
                 "hosted" -> DatrisEnvironment.current.hosted.toString,
                 "useUserAuth" -> DatrisEnvironment.values.useUserAuth.toString,
                 // OIDC single sign-on: "true" only when it is effectively on

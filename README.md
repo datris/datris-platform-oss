@@ -120,7 +120,7 @@ Add to your MCP client config (Claude Desktop, Claude Code, Cursor, etc.). With 
 }
 ```
 
-Paste-and-go for the default local setup — no API key required when `USE_API_KEYS=false` (the OSS default). If your instance enables auth (`USE_API_KEYS=true` or multi-tenant), append `"--header", "x-api-key:<your-key>"` to the `args` array. The Configuration → Connect Your Agent page generates the snippet for you and adds the header automatically when you paste your key.
+Paste-and-go for the default local setup — no API key required when `USE_API_KEYS=false` (the OSS default). If your instance enables auth (`USE_API_KEYS=true`), append `"--header", "x-api-key:<your-key>"` to the `args` array. The Configuration → Connect Your Agent page generates the snippet for you and adds the header automatically when you paste your key.
 
 Requires Node.js on your `PATH` (`brew install node`). For a stdio alternative without Docker, or full Claude Desktop / Claude Code / Cursor walkthroughs, see [Configuring Claude](https://docs.datris.ai/configuring-claude).
 

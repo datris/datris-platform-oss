@@ -949,7 +949,8 @@ components:
           description: Deployment label from DATRIS_ENV (e.g. dev, qa, prod); present only when set
         multiTenant:
           type: string
-          description: Whether the server is running in multi-tenant mode (true/false)
+          deprecated: true
+          description: 'Deprecated. Always "false": multi-tenant mode is retired, and a server with it switched on does not start. Kept so existing readers of the field keep working.'
         hosted:
           type: string
         useUserAuth:
@@ -3925,7 +3926,7 @@ paths:
                 database:
                   type: string
                   default: datris
-                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database, and in multi-tenant installs.
+                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database.
                 limit:
                   type: integer
                   default: 100
@@ -3960,7 +3961,7 @@ paths:
                   description: MongoDB collection name
                 database:
                   type: string
-                  description: MongoDB database name (defaults to the configured database). Ignored in multi-tenant installs, where the tenant's own database is queried. Must not be a MongoDB system database.
+                  description: MongoDB database name (defaults to the configured database). Must not be a MongoDB system database.
                 filter:
                   type: object
                   default: {}
@@ -4239,7 +4240,7 @@ paths:
                 database:
                   type: string
                   default: datris
-                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database, and in multi-tenant installs.
+                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database.
                 schema:
                   type: string
                   default: public
@@ -4537,7 +4538,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database.
       responses:
         '200':
           description: Array of schema names
@@ -4561,7 +4562,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database.
         - name: schema
           in: query
           schema:
@@ -4597,7 +4598,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database.
         - name: schema
           in: query
           schema:

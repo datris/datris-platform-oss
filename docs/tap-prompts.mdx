@@ -102,8 +102,4 @@ The same storage is exposed via REST for scripting and tenant migrations. See [T
 
 ## Performance
 
-The injector caches matched fragments in a per-tenant `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so changes take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap flows pay no measurable cost.
-
-## Multi-tenant
-
-Fragments are fully tenant-scoped. Each tenant's fragments live in their own `{env}-tap-prompt` MongoDB collection and their own injector cache entry. A fragment configured on one tenant never leaks into another's prompts.
+The injector caches matched fragments in a `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so changes take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap flows pay no measurable cost.

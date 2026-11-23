@@ -301,6 +301,8 @@ class StartupRunner extends ApplicationRunner {
 
     @Override
     def run(args: ApplicationArguments): Unit = {
+        // Multi-tenant mode is retired: stop before anything reads or writes a store.
+        ai.datris.util.MultiTenantRetired.refuseIfOn(multiTenant)
         ai.datris.util.TapScriptRunner.assertIsolationConfig()
         if (!ai.datris.util.TapScriptRunner.useTapRunner)
             ai.datris.util.TapScriptRunner.warnInProcess("startup")
@@ -400,8 +402,6 @@ class StartupRunner extends ApplicationRunner {
             DatrisEnvironment.init(env.copy(oidcEnabled = false))
             return
         }
-        if (env.multiTenant)
-            logger.warn("OIDC single sign-on is not verified with MULTI_TENANT=true; it signs people in to the default tenant's user store")
         ai.datris.auth.OidcLogin.configProblem(env.oidcIssuer, env.oidcClientId, env.oidcRedirectUri, env.oidcSecretName) match {
             case Some(problem) => off(problem)
             case None =>

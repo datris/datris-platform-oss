@@ -40,7 +40,7 @@ Add a connection of type **Datris** in the Airflow UI (or via env var / CLI):
 
 - **Local / single-tenant with `useApiKeys=false` (default):** leave the password
   blank — the header is ignored.
-- **Single-tenant with `useApiKeys=true`, or a multi-tenant install:**
+- **With `useApiKeys=true`:**
   set the password to an API key that holds the `tap:run` capability for the
   taps you trigger.
 

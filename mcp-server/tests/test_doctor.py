@@ -383,6 +383,52 @@ def test_config_multi_tenant_pre_upgrade_off_still_prints_the_upgrade_command(tm
         ], res.output
 
 
+def test_config_multi_tenant_is_an_error_when_the_shell_environment_turns_the_setting_on(tmp_path, monkeypatch):
+    # Compose substitutes ${MULTI_TENANT:-false} from the shell too, and the shell wins over `.env`.
+    for docker in (True, False):
+        for value in MT_ON:
+            monkeypatch.setenv("MULTI_TENANT", value)
+            r = FakeRunner({}, str(tmp_path), docker=docker)
+            res = doc.check_config_multi_tenant(r, {})
+            _assert_plain_multi_tenant_error(res)
+            assert "shell environment" in res["detail"], res
+            # on in the shell is reported even when `.env` turns it off
+            res = doc.check_config_multi_tenant(r, {"MULTI_TENANT": "false"})
+            _assert_plain_multi_tenant_error(res)
+            assert "shell environment" in res["detail"] and ".env file" not in res["detail"], res
+    for value in MT_OFF:
+        monkeypatch.setenv("MULTI_TENANT", value)
+        r = FakeRunner(_datris_env(MULTITENANT="false"), str(tmp_path))
+        assert doc.check_config_multi_tenant(r, {})["status"] == "ok", value
+    # an off value in the shell with no Docker and no `.env` value is a value: ok, not skip
+    monkeypatch.setenv("MULTI_TENANT", "false")
+    assert doc.check_config_multi_tenant(FakeRunner({}, str(tmp_path), docker=False), None)["status"] == "ok"
+
+
+def test_config_multi_tenant_names_where_it_found_the_setting(tmp_path, monkeypatch):
+    monkeypatch.delenv("MULTI_TENANT", raising=False)
+    res = doc.check_config_multi_tenant(FakeRunner({}, str(tmp_path)), {"MULTI_TENANT": "true"})
+    assert "the .env file" in res["detail"] and "shell" not in res["detail"] and "container" not in res["detail"], res
+    res = doc.check_config_multi_tenant(FakeRunner(_datris_env(MULTITENANT="true"), str(tmp_path)), {})
+    assert "the running datris container" in res["detail"] and ".env file" not in res["detail"], res
+    monkeypatch.setenv("MULTI_TENANT", "on")
+    res = doc.check_config_multi_tenant(FakeRunner(_datris_env(MULTITENANT="true"), str(tmp_path)), {"MULTI_TENANT": "yes"})
+    for where in ("the .env file", "the shell environment", "the running datris container"):
+        assert where in res["detail"], res
+
+
+def test_config_multi_tenant_pre_upgrade_withholds_the_upgrade_command_when_the_shell_turns_it_on(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    import cli
+    (tmp_path / ".env").write_text("USE_API_KEYS=true\n")
+    monkeypatch.setenv("MULTI_TENANT", "true")
+    monkeypatch.setattr(doc, "Runner", lambda compose_file=None, project_dir=None: FakeRunner({}, project_dir, docker=False))
+    res = CliRunner().invoke(cli.cli, ["doctor", "--pre-upgrade", "--project-dir", str(tmp_path)])
+    assert res.exit_code == 2, res.output
+    assert "shell environment" in res.output
+    assert "Ready to upgrade" not in res.output and "docker compose pull" not in res.output
+
+
 # 11. docker missing → all host checks skip; skips don't affect the exit code
 def test_no_docker_all_host_checks_skip(tmp_path, monkeypatch):
     r = FakeRunner({}, str(tmp_path), docker=False)

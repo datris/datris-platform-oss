@@ -400,24 +400,9 @@ CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD gene
 
 To use the same model for codegen as for everything else, point `oss/codegen` at the same secret values as `oss/ai-primary`.
 
-## Multi-Tenant: Per-Tenant Overrides
+## Setting your key from the UI
 
-In multi-tenant deployments (`multiTenant: "true"` in `application.yaml`) each tenant can override any of the three slots independently. The resolver checks per-request:
-
-| Slot | Per-tenant Vault path | Falls back to |
-|------|----------------------|---------------|
-| AI Primary | `{env}/ai-primary` | `oss/ai-primary` |
-| CodeGen | `{env}/codegen` | `oss/codegen` |
-| Embedding | `{env}/embedding` | `oss/embedding` |
-| Web Search | `{env}/web-search` | `oss/web-search` |
-
-(`{env}` is the tenant's environment name, e.g. `acme`.)
-
-A per-tenant secret takes effect on the next AI call — no restart needed. The override is independent for each slot: a tenant can override just AI Primary, just CodeGen, just Embedding, or any combination.
-
-### Setting your key from the UI
-
-Any tenant can manage all three slots from the platform UI. The Configuration page is organized into sub-tabs:
+You can manage all three slots from the platform UI. The Configuration page is organized into sub-tabs:
 
 - **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right (backed by the `{env}/ai-keys` secret — see [Shared API Key Store](#shared-api-key-store)). This is where you enter your provider API keys and pick models.
 - **Secrets** — operator-facing platform credentials (Vault-backed). Admin-only when user-auth is on.
@@ -434,25 +419,6 @@ To set your AI keys:
 2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, Azure OpenAI, Amazon Bedrock, Grok (xAI), and Ollama (local).
 3. For Anthropic/OpenAI/Azure/Grok, enter your API key in the right-hand panel and pick a model from the dropdown. For Azure, also enter your resource endpoint and type your deployment name as the model. For Amazon Bedrock, enter your AWS credentials and region in the right-hand panel (or leave the keys blank to use the server's IAM role) — the model dropdown then lists what your account can actually invoke. For Ollama, type the model name directly — no API key needed.
 4. Click **Save Configuration**. Changes take effect immediately — no restart required.
-
-To fall a tenant back to the global `oss/*` defaults, delete its per-tenant secrets in Vault (see below).
-
-### Setting tenant secrets directly in Vault
-
-For operators provisioning tenants programmatically:
-
-```bash
-docker compose exec -e VAULT_ADDR=http://vault:8200 \
-  -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault \
-  vault kv put secret/acme/ai-primary \
-  provider="anthropic" \
-  endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-opus-5-5" \
-  apiKey="sk-ant-..." \
-  version="2023-06-01"
-```
-
-Same shape for `{env}/codegen` and `{env}/embedding`.
 
 ## Misconfiguration
 

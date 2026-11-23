@@ -38,7 +38,7 @@ prod  datris.internal        installer, DATRIS_GOVERNED=1, DATRIS_ENV=production
 - Secrets belong to the install, not to a catalog. Dev taps could read production credentials.
 - One install has one agent policy, one audit log, one user list and one upgrade. An experiment in dev can take production down.
 
-Multi-tenant mode (`MULTI_TENANT=true`) isolates the stores per tenant, but it is meant for separate customers. Its tenants share one server process and one release, and the installer does not set it up.
+Separate customers need separate installs: one install serves one environment.
 </Note>
 
 ## Make definitions portable
