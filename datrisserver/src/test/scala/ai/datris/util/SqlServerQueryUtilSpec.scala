@@ -494,4 +494,35 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
             }
         }
     }
+
+    // ---- review round 1: a keyword glued to a number ----
+
+    test("a keyword glued to the end of a number is refused, refused words and BLOCKED_KEYWORDS words alike") {
+        Seq(
+            "SELECT 1SET NOCOUNT ON",
+            "SELECT 1WHILE 1=1SELECT 1",
+            "SELECT 1 x FROM t WHERE 1=1SELECT 2",
+            "SELECT a FROM t WHERE 1=1COMMIT",
+            "SELECT 1KILL 55",
+            "SELECT 1SHUTDOWN",
+            "SELECT 1DELETE FROM dbo.t",
+            "SELECT 1.5SET NOCOUNT ON",
+            "SELECT 0x1FSET NOCOUNT ON"
+        ).foreach { sql =>
+            intercept[DatrisException](SqlServerQueryUtil.validateQuery(sql))
+        }
+        val m = refusal("SELECT 1KILL 55")
+        assert(m == "Query contains blocked keyword: KILL", m)
+        Seq("SELECT 1SET NOCOUNT ON", "SELECT 1WHILE 1=1SELECT 1", "SELECT 1 x FROM t WHERE 1=1SELECT 2", "SELECT a FROM t WHERE 1=1COMMIT").foreach { sql =>
+            assert(problem(sql).isDefined, sql)
+        }
+    }
+
+    test("numbers in their written forms are still accepted") {
+        Seq(
+            "SELECT 1 AS a, 1.5 AS b, 2e3 AS c, 1.5E-3 AS d, 0x1F AS e, .5 AS f FROM t WHERE a = 1",
+            "SELECT TOP 10 id FROM t2 WHERE b IN (1, 2, 3) ORDER BY id",
+            "SELECT id FROM t ORDER BY id OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY"
+        ).foreach(accepted)
+    }
 }

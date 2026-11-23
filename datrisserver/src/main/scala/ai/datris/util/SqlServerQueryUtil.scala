@@ -239,7 +239,9 @@ object SqlServerQueryUtil {
             throw new DatrisException("SQL comments are not allowed in queries")
 
         BLOCKED_KEYWORDS.foreach { keyword =>
-            val pattern = ("(?i)\\b" + keyword + "\\b").r
+            // Not `\b` in front: T-SQL ends a number at its first letter, so a
+            // keyword glued to a digit is still the keyword.
+            val pattern = ("(?i)(?<![A-Za-z_@#$])" + keyword + "\\b").r
             if (pattern.findFirstIn(normalized).isDefined)
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
@@ -358,7 +360,29 @@ object SqlServerQueryUtil {
                 if (depth < 0) return Left("Query has a closing parenthesis with no matching opening one")
                 i += 1
                 out += Close
-            } else if (c.isLetterOrDigit || c == '_') {
+            } else if (c.isDigit) {
+                // A number. T-SQL ends it at the first character that cannot
+                // continue it, so a letter right after it starts a new word
+                // (a keyword included): refuse that outright.
+                val start = i
+                if (c == '0' && i + 1 < n && (sql.charAt(i + 1) == 'x' || sql.charAt(i + 1) == 'X')) {
+                    i += 2
+                    while (i < n && isHexDigit(sql.charAt(i))) i += 1
+                } else {
+                    while (i < n && sql.charAt(i).isDigit) i += 1
+                    if (i < n && sql.charAt(i) == '.') { i += 1; while (i < n && sql.charAt(i).isDigit) i += 1 }
+                    if (i < n && (sql.charAt(i) == 'e' || sql.charAt(i) == 'E')) {
+                        val sign = if (i + 1 < n && (sql.charAt(i + 1) == '+' || sql.charAt(i + 1) == '-')) 1 else 0
+                        if (i + 1 + sign < n && sql.charAt(i + 1 + sign).isDigit) {
+                            i += 1 + sign
+                            while (i < n && sql.charAt(i).isDigit) i += 1
+                        }
+                    }
+                }
+                if (i < n && isWordChar(sql.charAt(i)))
+                    return Left("Query has a number joined to a word; put a space between them")
+                out += Word(sql.substring(start, i), start, depth)
+            } else if (c.isLetter || c == '_') {
                 val start = i
                 while (i < n && isWordChar(sql.charAt(i))) i += 1
                 out += Word(sql.substring(start, i), start, depth)
@@ -373,6 +397,8 @@ object SqlServerQueryUtil {
 
     private def startsWithWord(upper: String, word: String): Boolean =
         upper.startsWith(word) && (upper.length == word.length || !isWordChar(upper.charAt(word.length)))
+
+    private def isHexDigit(c: Char): Boolean = c.isDigit || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 
     private def isWordChar(c: Char): Boolean = c.isLetterOrDigit || c == '_' || c == '@' || c == '#' || c == '$'
 

@@ -105,4 +105,24 @@ class SnowflakeQueryValidationSpec extends AnyFunSuite {
         assert(QuerySafetyReflect.timeoutFor(SnowflakeQueryUtil, 100) == 30)
         assert(QuerySafetyReflect.timeoutFor(SnowflakeQueryUtil, 0) == 30)
     }
+
+    // ---- review round 1 ----
+
+    test("a SYSTEM$ name outside the allowlist is refused anywhere, not only before a parenthesis") {
+        refusedNaming("SELECT 'SYSTEM$WAIT' AS f", "SYSTEM$WAIT")
+        refusedNaming("SELECT \"SYSTEM$WAIT\" FROM t", "SYSTEM$WAIT")
+        // the allowlist still reads, and a non-allowlisted name inside it is refused
+        validate("SELECT SYSTEM$TYPEOF(a) FROM t")
+        refusedNaming("SELECT SYSTEM$TYPEOF(SYSTEM$WAIT(1))", "SYSTEM$WAIT")
+    }
+
+    test("an IDENTIFIER call is refused; GETNEXTVAL is refused; a // line comment is refused") {
+        cases("IDENTIFIER('SYSTEM$TYPEOF')(1)").foreach(c => refusedNaming("SELECT " + c, "IDENTIFIER"))
+        refusedNaming("SELECT * FROM IDENTIFIER ('db.s.t')", "IDENTIFIER")
+        cases("TABLE(GETNEXTVAL(seq1))").foreach(c => refusedNaming("SELECT s.v FROM t, " + c + " s", "GETNEXTVAL"))
+        val e = intercept[DatrisException](validate("SELECT a //x\n FROM t"))
+        assert(e.getMessage == "SQL comments are not allowed in queries", e.getMessage)
+        // a column whose name only contains the word is not the call
+        validate("SELECT identifier_type, getnextval_count FROM t")
+    }
 }

@@ -58,12 +58,15 @@ object SnowflakeQueryUtil {
     /** Functions a read can call that act outside the query: cancel or abort
       * other queries, sessions and transactions, resume pipes and tasks, hold
       * the warehouse, or advance a sequence. Each entry is a case-insensitive
-      * regex. A `SYSTEM$` name is refused where it is called (the name,
-      * optional whitespace, then `(`), every one of them except
-      * [[SYSTEM_FUNCTION_ALLOWLIST]], so a name added by Snowflake later is
-      * refused too. `NEXTVAL` is written without parentheses
-      * (`<sequence>.NEXTVAL`), so it is refused as a whole word. Matched over
-      * the whole text, string literals included, as BLOCKED_KEYWORDS is.
+      * regex, refused as a whole word anywhere in the text. Every `SYSTEM$`
+      * name is refused except [[SYSTEM_FUNCTION_ALLOWLIST]], so a name added
+      * by Snowflake later is refused too; nothing else is named `SYSTEM$...`.
+      * `NEXTVAL` (`<sequence>.NEXTVAL`) and `GETNEXTVAL` (the table-function
+      * form) advance a sequence. `IDENTIFIER` is refused only where it is
+      * called (the name, optional whitespace, then `(`): it turns a string,
+      * built any way, into a function name, so no name list could catch what
+      * it calls. Matched over the whole text, string literals included, as
+      * BLOCKED_KEYWORDS is. Names are reported in upper case.
       *
       * This is a second line, not the control: Snowflake has no read-only
       * session, and the query runs as the pipeline's `credentialsSecret` role,
@@ -81,12 +84,17 @@ object SnowflakeQueryUtil {
       * Information functions that only read (the allowlist): SYSTEM$TYPEOF,
       * SYSTEM$CLUSTERING_INFORMATION, SYSTEM$CLUSTERING_DEPTH. NEXTVAL:
       * confirmed in the sequences guide (user-guide/querying-sequences); each
-      * reference generates new values. Not confirmed: none of these was
+      * reference generates new values; GETNEXTVAL is its table-function form
+      * (review, same date; page not re-read). IDENTIFIER: documented for
+      * function names; not confirmed that it resolves SYSTEM$ names, refused
+      * regardless. Not confirmed: none of these was
       * executed, and no other SYSTEM$ name was reviewed one by one (they are
       * refused as a class). */
     private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
         "SYSTEM\\$[\\w$]+",
-        "NEXTVAL"
+        "NEXTVAL",
+        "GETNEXTVAL",
+        "IDENTIFIER"
     )
 
     /** Read-only `SYSTEM$` functions a query may call. */
@@ -96,19 +104,19 @@ object SnowflakeQueryUtil {
         "SYSTEM$CLUSTERING_DEPTH"
     )
 
-    // BLOCKED_FUNCTIONS entries refused as whole words rather than as calls.
-    private val WordOnlyFunctions = Set("NEXTVAL")
+    // BLOCKED_FUNCTIONS entries refused only as calls rather than as whole words.
+    private val CallOnlyFunctions = Set("IDENTIFIER")
 
     private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] = BLOCKED_FUNCTIONS.map { fn =>
-        if (WordOnlyFunctions.contains(fn)) ("(?i)(?<![\\w$])(" + fn + ")(?![\\w$])").r
-        else ("(?i)(?<![\\w$])\"?(" + fn + ")\"?\\s*\\(").r
+        if (CallOnlyFunctions.contains(fn)) ("(?i)(?<![\\w$])\"?(" + fn + ")\"?\\s*\\(").r
+        else ("(?i)(?<![\\w$])(" + fn + ")(?![\\w$])").r
     }
 
-    /** The first [[BLOCKED_FUNCTIONS]] name `sql` uses, as written. */
+    /** The first [[BLOCKED_FUNCTIONS]] name `sql` uses, in upper case. */
     private[util] def blockedFunction(sql: String): Option[String] =
         BlockedFunctionPatterns.iterator
-            .flatMap(_.findAllMatchIn(sql).map(_.group(1)))
-            .find(name => !SYSTEM_FUNCTION_ALLOWLIST.contains(name.toUpperCase(java.util.Locale.ROOT)))
+            .flatMap(_.findAllMatchIn(sql).map(_.group(1).toUpperCase(java.util.Locale.ROOT)))
+            .find(name => !SYSTEM_FUNCTION_ALLOWLIST.contains(name))
 
     case class SnowflakeQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
 
@@ -197,8 +205,9 @@ object SnowflakeQueryUtil {
         if (normalized.contains(";"))
             throw new DatrisException("Semicolons are not allowed in queries")
 
-        // Reject SQL comments that could be used for obfuscation
-        if (normalized.contains("--") || normalized.contains("/*"))
+        // Reject SQL comments that could be used for obfuscation (Snowflake
+        // also reads `//` as a line comment)
+        if (normalized.contains("--") || normalized.contains("/*") || normalized.contains("//"))
             throw new DatrisException("SQL comments are not allowed in queries")
 
         BLOCKED_KEYWORDS.foreach { keyword =>

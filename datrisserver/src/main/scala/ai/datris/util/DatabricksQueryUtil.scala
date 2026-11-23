@@ -75,7 +75,11 @@ object DatabricksQueryUtil {
       * is called (the name, optional backticks, optional whitespace, then
       * `(`), so a column or value named `secret` or a table named
       * `ai_results` still reads. Every `ai_*` function is refused, including
-      * ones Databricks adds later. Matched over the whole text, string
+      * ones Databricks adds later. `identifier` is refused where it is called:
+      * `IDENTIFIER(<string>)(args)` calls a function named by a string, built
+      * any way, so no name list could catch what it calls. The cost of
+      * matching calls: a column-list alias with a listed name
+      * (`WITH secret(a) AS ...`) is refused too. Matched over the whole text, string
       * literals included, as BLOCKED_KEYWORDS is.
       *
       * This is a second line, not the control: Databricks has no read-only
@@ -108,15 +112,21 @@ object DatabricksQueryUtil {
         "read_pulsar",
         "java_method",
         "reflect",
-        "try_reflect"
+        "try_reflect",
+        "identifier"
     )
 
     private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] =
         BLOCKED_FUNCTIONS.map(fn => ("(?i)(?<!\\w)`?(" + fn + ")`?\\s*\\(").r)
 
-    /** The first [[BLOCKED_FUNCTIONS]] name `sql` calls, as written. */
+    /** The first [[BLOCKED_FUNCTIONS]] name `sql` calls, as written
+      * (`IDENTIFIER` in upper case). */
     private[util] def blockedFunction(sql: String): Option[String] =
-        BlockedFunctionPatterns.view.flatMap(_.findFirstMatchIn(sql)).headOption.map(_.group(1))
+        BlockedFunctionPatterns.view
+            .flatMap(_.findFirstMatchIn(sql))
+            .headOption
+            .map(_.group(1))
+            .map(name => if (name.equalsIgnoreCase("identifier")) "IDENTIFIER" else name)
 
     case class DatabricksQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
 

@@ -122,4 +122,17 @@ class DatabricksQueryValidationSpec extends AnyFunSuite {
         assert(QuerySafetyReflect.timeoutFor(DatabricksQueryUtil, 100) == 30)
         assert(QuerySafetyReflect.timeoutFor(DatabricksQueryUtil, 0) == 30)
     }
+
+    // ---- review round 1 ----
+
+    test("an IDENTIFIER call is refused, since it can name any function") {
+        cases("IDENTIFIER('secret')('scope', 'key')").foreach { c =>
+            val e = intercept[DatrisException](validate("SELECT " + c))
+            assert(e.getMessage == "Query contains blocked function: IDENTIFIER", e.getMessage)
+        }
+        refusedNaming("SELECT IDENTIFIER ('sec' || 'ret')('scope', 'key')", "identifier")
+        refusedNaming("SELECT * FROM identifier('main.default.t')", "identifier")
+        validate("SELECT identifier_type, identifier FROM t")
+        assert(QuerySafetyReflect.stringList(DatabricksQueryUtil, "BLOCKED_FUNCTIONS").map(_.toLowerCase(Locale.ROOT)).contains("identifier"))
+    }
 }
