@@ -8,8 +8,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonElement, JsonObject, JsonParseException, JsonParser}
 import ai.datris.audit.AuditLog
-import ai.datris.auth.CapabilityCheck
-import ai.datris.model.{DatrisEnvironment, PipelineConfig, ValidationException}
+import ai.datris.auth.{CallerVisibility, CapabilityCheck}
+import ai.datris.model.{DatrisEnvironment, PipelineConfig, ResolvedKey, ValidationException}
 import ai.datris.util.{AISchemaUtil, APIKeyValidator, AiSampleValues, CatalogOps, ObjectStoreUtil, PipelineConfigIO}
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -128,13 +128,25 @@ object ConfigAPIController {
         } catch { case _: Exception => None }
     }
 
+    /** An object key for comparison only: repeated `/` collapsed and a
+      * leading `/` removed, so `validation-schema//orders.json` and
+      * `/validation-schema/orders.json` compare equal to
+      * `validation-schema/orders.json`. */
+    private def comparableKey(key: String): String = key.replaceAll("/+", "/").stripPrefix("/")
+
+    /** [[schemaObject]] with its key in [[comparableKey]] form. */
+    private def comparableObject(value: String, configBucket: String): Option[(String, String)] =
+        schemaObject(value, configBucket).map { case (b, k) => (b, comparableKey(k)) }
+
     /** The stored pipelines whose validation schema is the object at
-      * configBucket/validation-schema/file. Keys are case-sensitive. */
+      * configBucket/validation-schema/file, keys compared after
+      * [[comparableKey]]. Keys are case-sensitive. A value that cannot be
+      * parsed names no object and matches nothing. */
     private[api] def pipelinesUsing(file: String, configBucket: String, all: Seq[PipelineConfig]): Seq[PipelineConfig] = {
-        val target = schemaObject(file, configBucket)
+        val target = comparableObject(file, configBucket)
         all.filter { p =>
             p != null && p.dataQuality != null &&
-            target.isDefined && schemaObject(p.dataQuality.validationSchema, configBucket) == target
+            target.isDefined && comparableObject(p.dataQuality.validationSchema, configBucket) == target
         }
     }
 
@@ -152,17 +164,39 @@ object ConfigAPIController {
                 ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(inUseMessage(file)))
             )
 
-    /** The stored-item rule: the caller's identity grants `pipeline:update`
-      * on the pipeline's catalog and owner. No identity (keys off): yes. */
+    /** The rule the pipeline update routes apply to a stored pipeline: the
+      * caller's identity grants `pipeline:update` on the pipeline's catalog
+      * and owner, and, for an API key, the key may also read it
+      * ([[CallerVisibility.storedWriteDenial]] for update is empty: a key
+      * writes only what it may read). A signed-in session is decided on its
+      * grants alone. No identity (keys off): yes. */
     private[api] def mayUpdatePipeline(request: HttpServletRequest)(p: PipelineConfig): Boolean =
         CapabilityCheck.resolvedKey(request) match {
             case None => true
-            case Some(rk) => rk.grants("pipeline", "update", CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel))
+            case Some(rk) =>
+                val context = CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel)
+                rk.grants("pipeline", "update", context) &&
+                (rk.restrictedSession || CallerVisibility.storedWriteDenial(rk, "pipeline", context, Seq("update"), "update").isEmpty)
         }
+
+    /** Whether the in-use rule needs the stored pipelines for this caller.
+      * False (nothing is read, nothing can be refused) for: no identity
+      * (keys off); full access; a caller that is not a restricted session,
+      * holds `pipeline:update` with no scope, and whose pipeline read cannot
+      * be refused by a key scope ([[CallerVisibility.keyScopeApplies]]),
+      * since [[mayUpdatePipeline]] is true for every pipeline then. True for
+      * everyone else. Pure. */
+    private[api] def pipelineReadNeeded(rk: Option[ResolvedKey]): Boolean = rk match {
+        case None => false
+        case Some(k) =>
+            !(k.isFullAccess ||
+                (!k.restrictedSession && k.grants("pipeline", "update") && !CallerVisibility.keyScopeApplies(k, "pipeline", "read")))
+    }
 
     /** POST /config/generate-schema after the key check: the request checks
       * of [[parseGenerateSchema]] (400), then the in-use rule (409), then the
-      * model call and the write. A failed pipeline read is a 500 with nothing
+      * model call and the write. The stored pipelines are read only when
+      * [[pipelineReadNeeded]]; a failed read is then a 500 with nothing
       * generated or written. */
     def generateSchemaWith(request: HttpServletRequest, body: String, deps: GenerateSchemaDeps): ResponseEntity[String] = {
         try {
@@ -178,8 +212,10 @@ object ConfigAPIController {
                 request.setAttribute(AuditLog.MetadataAttr, md)
             }
 
-            val referencing = pipelinesUsing(filename, bucket, deps.pipelines())
-            schemaOverwriteRefusal(filename, referencing, mayUpdatePipeline(request)) match {
+            val inUse =
+                if (!pipelineReadNeeded(CapabilityCheck.resolvedKey(request))) None
+                else schemaOverwriteRefusal(filename, pipelinesUsing(filename, bucket, deps.pipelines()), mayUpdatePipeline(request))
+            inUse match {
                 case Some(refusal) =>
                     companionLogger.info("Generate schema refused: " + filename + " is used by a pipeline the caller may not update")
                     if (request != null) request.setAttribute(AuditLog.ErrorMessageAttr, inUseMessage(filename))

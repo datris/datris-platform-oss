@@ -6,7 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.{AuditEntry, AuditLog}
+import ai.datris.auth.CapabilityScopes
 import ai.datris.config.TenantInterceptor
+import ai.datris.incident.RecoveryKey
 import ai.datris.model._
 import ai.datris.util.{APIKeyValidator, AiSampleValues, InMemoryUserDb}
 import ai.datris.util.InMemoryUserDb.grants
@@ -61,11 +63,17 @@ import scala.collection.mutable
   * `s3://<env>-config/validation-schema/<value>`, then bucket and key through
   * the URI). Object keys are case-sensitive in the shipped store (MinIO on a
   * named volume), so a name differing only in case is another object.
-  * "May update" is the stored-item rule: the identity grants
-  * `pipeline:update` on the pipeline's catalog and owner (no identity: yes). */
+  * Object keys are compared after collapsing repeated `/` and dropping a
+  * leading `/`; a value that cannot be parsed names no object.
+  * "May update" is the rule the pipeline update routes apply: the identity
+  * grants `pipeline:update` on the pipeline's catalog and owner and, for an
+  * API key, may also read it (`CallerVisibility.storedWriteDenial`); no
+  * identity: yes. A caller who may update every pipeline
+  * (`pipelineReadNeeded` false) is never refused and the stored pipelines
+  * are not read for it. */
 class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
 
-    import ConfigAPIController.{generateSchemaWith, schemaOverwriteRefusal, GenerateSchemaDeps}
+    import ConfigAPIController.{generateSchemaWith, pipelineReadNeeded, pipelinesUsing, schemaOverwriteRefusal, GenerateSchemaDeps}
 
     private var savedEnv: DatrisEnvironment = _
     private val captured = mutable.ArrayBuffer[AuditEntry]()
@@ -101,7 +109,9 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
     ) extends GenerateSchemaDeps {
         val generated = mutable.ArrayBuffer[(String, String)]()
         val written = mutable.ArrayBuffer[(String, String, String)]()
+        var pipelineReads = 0
         override def pipelines(): Seq[PipelineConfig] = {
+            pipelineReads += 1
             if (pipelinesFail) throw new RuntimeException("pipeline configs unavailable")
             configs
         }
@@ -140,6 +150,44 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
     private val marketingKey = key("mkt-builder", "pipeline:read:catalog=Marketing", "pipeline:create:catalog=Marketing", "pipeline:update:catalog=Marketing")
     private val ownKey = key("own-builder", "pipeline:read:owner=self", "pipeline:create", "pipeline:update:owner=self")
     private val authorKey = key("author", "pipeline:read", "pipeline:create", "pipeline:update")
+
+    /** Stored capabilities as key resolution splits them (applied, inert). */
+    private def storedRk(label: String, caps: String*): ResolvedKey = {
+        val (applied, inert) = CapabilityScopes.partition(Capability.parseList(caps))
+        ResolvedKey(None, label, applied, isLegacyFullAccess = false, inertCapabilities = inert)
+    }
+    private val fullAccessRk = ResolvedKey(None, "full", Seq(Capability.FullAccess), isLegacyFullAccess = false)
+    private val legacyRk = ResolvedKey(None, "legacy", Seq(Capability.FullAccess), isLegacyFullAccess = true)
+    private val recoveryRk = ResolvedKey(None, RecoveryKey.Label, Capability.parseList(RecoveryKey.Capabilities), isLegacyFullAccess = false)
+    private val wildcardRk = ResolvedKey(None, "mkt-wild", Capability.parseList(Seq("*:*:catalog=Marketing")), isLegacyFullAccess = false)
+
+    /** Unscoped pipeline update, pipeline read limited to Marketing. */
+    private val readLimitedRk = ResolvedKey(
+        None,
+        "upd-everywhere",
+        Capability.parseList(Seq("pipeline:update", "pipeline:create", "pipeline:read:catalog=Marketing")),
+        isLegacyFullAccess = false
+    )
+
+    /** pipeline:update scoped by a key the platform does not apply on it (inert). */
+    private val inertRk = storedRk("inert-upd", "pipeline:read", "pipeline:update:collection=docs")
+    private val fullAccessKey = req(fullAccessRk)
+    private val legacyKey = req(legacyRk)
+    private val recoveryKey = req(recoveryRk)
+    private val wildcardKey = req(wildcardRk)
+    private val readLimitedKey = req(readLimitedRk)
+    private val inertKey = req(inertRk)
+
+    private def inMode[T](allow: Boolean)(f: => T): T = {
+        val prior = sys.props.get(CapabilityScopes.InertScopesProperty)
+        if (allow) sys.props(CapabilityScopes.InertScopesProperty) = CapabilityScopes.InertScopesAllow
+        else sys.props -= CapabilityScopes.InertScopesProperty
+        try f
+        finally prior match {
+                case Some(v) => sys.props(CapabilityScopes.InertScopesProperty) = v
+                case None => sys.props -= CapabilityScopes.InertScopesProperty
+            }
+    }
 
     private def pipe(name: String, catalog: String, schema: String, owner: String = "someone"): PipelineConfig =
         PipelineConfig(name = name, catalog = catalog, createdByKeyLabel = owner, dataQuality = DataQuality(validationSchema = schema))
@@ -216,7 +264,12 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
             "editor" -> (editor, Seq(salesOrders, hrPayroll, mktOrders)),
             "admin" -> (admin, Seq(salesOrders, hrPayroll)),
             "keys-off" -> (keysOff, Seq(salesOrders, hrPayroll)),
-            "no identity" -> (noIdentity, Seq(salesOrders, hrPayroll))
+            "no identity" -> (noIdentity, Seq(salesOrders, hrPayroll)),
+            "full-access key" -> (fullAccessKey, Seq(salesOrders, hrPayroll)),
+            "legacy key" -> (legacyKey, Seq(salesOrders, hrPayroll)),
+            "recovery key" -> (recoveryKey, Seq(salesOrders, hrPayroll, mktOrders)),
+            "scoped wildcard key" -> (wildcardKey, Seq(mktOrders)),
+            "unscoped update, read limited to the catalog" -> (readLimitedKey, Seq(mktOrders))
         )
         cases.foreach { case (what, (r, used)) =>
             val d = new FakeDeps(stored = Stored, configs = used :+ unrelated)
@@ -253,6 +306,39 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
         assertInUse(generateSchemaWith(ownKey, body(), d), d)
     }
 
+    test("a key with unscoped pipeline update but pipeline read limited to one catalog cannot replace a schema a pipeline elsewhere uses") {
+        val d = new FakeDeps(stored = Stored, configs = Seq(mktOrders, hrPayroll))
+        assertInUse(generateSchemaWith(readLimitedKey, body(), d), d)
+        // A name used only inside the catalog it reads: allowed.
+        val own = new FakeDeps(stored = Stored, configs = Seq(mktOrders, unrelated))
+        assertAllowed(generateSchemaWith(readLimitedKey, body(), own), own)
+    }
+
+    test("a scoped wildcard key cannot replace a schema a pipeline outside its catalog uses") {
+        val d = new FakeDeps(stored = Stored, configs = Seq(mktOrders, salesOrders))
+        assertInUse(generateSchemaWith(wildcardKey, body(), d), d)
+    }
+
+    test("an inert-scoped pipeline:update grants no pipeline: any name a pipeline uses is refused, a free name is generated") {
+        Seq(false, true).foreach { allow =>
+            inMode(allow) {
+                withClue(s"allow=$allow: ") {
+                    val d = new FakeDeps(stored = Stored, configs = Seq(mktOrders))
+                    assertInUse(generateSchemaWith(inertKey, body(), d), d)
+                    val free = new FakeDeps(stored = Stored, configs = Seq(mktOrders))
+                    assertAllowed(generateSchemaWith(inertKey, body("fresh_feed"), free), free, file = "fresh_feed.json")
+                }
+            }
+        }
+    }
+
+    test("the legacy and recovery keys replace a schema whatever pipelines use it") {
+        Seq("legacy key" -> legacyKey, "recovery key" -> recoveryKey).foreach { case (what, r) =>
+            val d = new FakeDeps(stored = Stored, configs = Seq(salesOrders, hrPayroll, mktOrders))
+            withClue(what + ": ") { assertAllowed(generateSchemaWith(r, body(), d), d) }
+        }
+    }
+
     // ------------------------------------------------------------ same object, other spelling
 
     test("a request name in path form is the stored object it reduces to") {
@@ -266,7 +352,10 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
         Seq(
             "s3://test-config/validation-schema/orders.json",
             "s3://test-config/validation-schema/orders%2Ejson",
-            "orders%2Ejson"
+            "orders%2Ejson",
+            "/orders.json",
+            "s3://test-config/validation-schema//orders.json",
+            "s3://test-config//validation-schema/orders.json"
         ).foreach { v =>
             val d = new FakeDeps(stored = Stored, configs = Seq(pipe("hr_payroll_feed", "HR", v)))
             withClue(v + ": ") { assertInUse(generateSchemaWith(marketingKey, body(), d), d) }
@@ -295,6 +384,17 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
         assertAllowed(generateSchemaWith(marketingKey, body("Orders"), c), c, file = "Orders.json")
     }
 
+    test("a pipeline whose validation-schema value cannot be parsed names no object and blocks nothing") {
+        Seq("orders json", "orders.json%", "s3://test config/validation-schema/orders.json").foreach { v =>
+            val p = pipe("hr_payroll_feed", "HR", v)
+            withClue(v + ": ") {
+                assert(pipelinesUsing("orders.json", Bucket, Seq(p)).isEmpty)
+                val d = new FakeDeps(stored = Stored, configs = Seq(p))
+                assertAllowed(generateSchemaWith(marketingKey, body(), d), d)
+            }
+        }
+    }
+
     test("an xsd name is checked against the .xsd object") {
         val d = new FakeDeps(stored = Set("validation-schema/orders.xsd"), configs = Seq(pipe("hr_payroll_feed", "HR", "orders.xsd")))
         val r = generateSchemaWith(marketingKey, body(schemaType = "xsd"), d)
@@ -305,11 +405,60 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ------------------------------------------------------------ failures and order
 
-    test("a failed pipeline read is a 500 with nothing generated or written") {
-        val p = new FakeDeps(stored = Stored, configs = Seq(hrPayroll), pipelinesFail = true)
-        val r2 = generateSchemaWith(editor, body(), p)
-        assert(status(r2) == 500, r2.getBody)
-        assert(p.untouched)
+    /** Callers the in-use rule can never refuse (the stored pipelines are not read). */
+    private def skipCallers: Seq[(String, HttpServletRequest)] = Seq(
+        "admin session" -> admin,
+        "unrestricted editor session" -> editor,
+        "keys-off" -> keysOff,
+        "no identity" -> noIdentity,
+        "full-access key" -> fullAccessKey,
+        "legacy key" -> legacyKey,
+        "recovery key" -> recoveryKey,
+        "unscoped authoring key" -> authorKey
+    )
+
+    /** Callers the in-use rule can refuse (the stored pipelines are read). */
+    private def readCallers: Seq[(String, HttpServletRequest)] = Seq(
+        "restricted session with an edit grant" -> bob,
+        "catalog-limited key" -> marketingKey,
+        "key limited to what it created" -> ownKey,
+        "scoped wildcard key" -> wildcardKey,
+        "unscoped update with scoped read" -> readLimitedKey,
+        "inert-scoped update" -> inertKey
+    )
+
+    test("pipelineReadNeeded: false for callers who may update every pipeline, true for everyone else") {
+        Seq(false, true).foreach { allow =>
+            inMode(allow) {
+                val identity: HttpServletRequest => Option[ResolvedKey] = ai.datris.auth.CapabilityCheck.resolvedKey
+                val wrong = skipCallers.collect { case (what, r) if pipelineReadNeeded(identity(r)) => what + ": read, expected skip" } ++
+                    readCallers.collect { case (what, r) if !pipelineReadNeeded(identity(r)) => what + ": skip, expected read" }
+                assert(wrong.isEmpty, s"allow=$allow" + wrong.mkString("\n", "\n", ""))
+            }
+        }
+        assert(!pipelineReadNeeded(None))
+    }
+
+    test("with the pipeline read failing, a caller who may update every pipeline gets 200 and reads no pipeline") {
+        skipCallers.foreach { case (what, r) =>
+            val d = new FakeDeps(stored = Stored, configs = Seq(hrPayroll), pipelinesFail = true)
+            withClue(what + ": ") {
+                assertAllowed(generateSchemaWith(r, body(), d), d)
+                assert(d.pipelineReads == 0)
+            }
+        }
+    }
+
+    test("with the pipeline read failing, every other caller gets a 500 with nothing generated or written") {
+        readCallers.foreach { case (what, r) =>
+            val d = new FakeDeps(stored = Stored, configs = Seq(hrPayroll), pipelinesFail = true)
+            val res = generateSchemaWith(r, body(), d)
+            withClue(what + ": ") {
+                assert(status(res) == 500, res.getBody)
+                assert(d.untouched)
+                assert(d.pipelineReads == 1)
+            }
+        }
     }
 
     test("input errors keep their 400 text, come before the in-use rule and the model, and say nothing about use") {

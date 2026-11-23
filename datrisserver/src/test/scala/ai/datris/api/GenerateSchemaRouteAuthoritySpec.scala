@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.{AuditEntry, AuditLog}
-import ai.datris.auth.{CapabilityRoutes, RouteCheck, TapRunTokens}
+import ai.datris.auth.{CapabilityRoutes, CapabilityScopes, RouteCheck, TapRunTokens}
 import ai.datris.config.{CapabilityInterceptor, TenantInterceptor}
 import ai.datris.incident.RecoveryKey
 import ai.datris.model._
@@ -91,6 +91,12 @@ class GenerateSchemaRouteAuthoritySpec extends AnyFunSuite with BeforeAndAfterEa
     private val keysOff = ResolvedKey(None, "anonymous", Seq(Capability.FullAccess), isLegacyFullAccess = true)
     private val recovery = key(RecoveryKey.Label, RecoveryKey.Capabilities)
 
+    /** `pipeline:update` scoped by a key the platform does not apply on it: grants nothing by default. */
+    private val inertKey = {
+        val (applied, inert) = CapabilityScopes.partition(Capability.parseList(Seq("pipeline:read", "pipeline:update:collection=docs")))
+        ResolvedKey(None, "inert-upd", applied, isLegacyFullAccess = false, inertCapabilities = inert)
+    }
+
     /** (caller, identity, may generate a schema). The required outcome of D1 (a). */
     private def callers: Seq[(String, ResolvedKey, Boolean)] = Seq(
         ("admin session", session(user(User.RoleAdmin)), true),
@@ -131,7 +137,14 @@ class GenerateSchemaRouteAuthoritySpec extends AnyFunSuite with BeforeAndAfterEa
             chatFor(User("bob", "h", User.RoleEditor, null, null, null, restricted = true, catalogGrants = grants("Sales" -> "view"))),
             false
         ),
-        ("recovery key", recovery, true)
+        ("recovery key", recovery, true),
+        ("scoped wildcard key", key("mkt-wild", Seq("*:*:catalog=Marketing")), true),
+        (
+            "key with unscoped pipeline update and pipeline read limited to a catalog",
+            key("upd-everywhere", Seq("pipeline:update", "pipeline:read:catalog=Marketing")),
+            true
+        ),
+        ("inert-scoped pipeline:update key", inertKey, false)
     )
 
     // ------------------------------------------------------------ Acceptance 1-2: the route's capability
