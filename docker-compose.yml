@@ -315,10 +315,10 @@ services:
       # mounted read-only below — no well-known `root-token`. An operator can pin
       # a fixed token instead by setting DATRIS_VAULT_TOKEN (passed to vault-init).
       VAULT_TOKEN_FILE: /vault-token/token
-      # Auth / multi-tenancy toggles. Defaults preserve OSS single-tenant behavior;
-      # flip these in your .env to enable user auth, API-key gating, or multi-tenant
-      # mode without rebuilding the JAR. Spring's relaxed binding maps these env
-      # names onto useUserAuth / useApiKeys / multiTenant in application.yaml.
+      # Auth toggles. Defaults preserve the open single-user behavior; flip these
+      # in your .env to enable user auth or API-key gating without rebuilding the
+      # JAR. Spring's relaxed binding maps these env names onto useUserAuth /
+      # useApiKeys in application.yaml.
       USEUSERAUTH: "${USE_USER_AUTH:-false}"
       # OIDC single sign-on ("Sign in with SSO" on the login page). Off by
       # default; only takes effect with USE_USER_AUTH=true. OIDC_* maps to
@@ -333,6 +333,9 @@ services:
       OIDC_USERNAMECLAIM: "${OIDC_USERNAME_CLAIM:-email}"
       OIDC_DEFAULTROLE: "${OIDC_DEFAULT_ROLE:-}"
       USEAPIKEYS: "${USE_API_KEYS:-false}"
+      # Multi-tenant mode is retired. MULTI_TENANT is still passed through so the
+      # server can refuse to start, with a message saying why, when an old .env
+      # still turns it on. Remove MULTI_TENANT from your .env.
       MULTITENANT: "${MULTI_TENANT:-false}"
       # Audit log: durable record of who created / changed / ran / deleted what,
       # readable by admins under Configuration → Audit Log. Off by default.
@@ -445,12 +448,10 @@ services:
       # overloaded; read by AgentLoop.sonnetFallbackFor() at runtime.
       ANTHROPIC_OVERLOAD_FALLBACK_MODEL: "${ANTHROPIC_OVERLOAD_FALLBACK_MODEL:-}"
       # Provider API keys exposed to the Scala runtime for AIUtil.resolveApiKey's
-      # env-var fallback (gated to single-tenant). Used when an AI section's Vault
-      # secret has no apiKey of its own — e.g. user enabled web search via UI but
-      # the right-hand panel showed the masked placeholder so no real key reached
-      # oss/web-search. The runtime then falls back to these. Multi-tenant tenants
-      # don't fall through (multiTenant=true short-circuits the helper) so platform
-      # keys never leak across tenants.
+      # env-var fallback. Used when an AI section's Vault secret has no apiKey of
+      # its own — e.g. user enabled web search via UI but the right-hand panel
+      # showed the masked placeholder so no real key reached oss/web-search. The
+      # runtime then falls back to these.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
