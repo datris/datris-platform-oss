@@ -159,4 +159,40 @@ class TapOwnerScopeReportSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(!warns.exists(_.contains(placeholder.name)), warns.mkString("\n"))
         assert(audit.synchronized(audit.toList).forall(e => !e.resourceName.contains(placeholder.name)))
     }
+
+    // ================================================================ remedy text (plans/stories/tap-change-owner.md)
+
+    // Story: Change a tap's owner, Design 8: the two scheduled-feed WARN lines
+    // name an administrator's owner change instead of recreating the tap.
+    // Widening the owner stays a remedy; the audit rows are unchanged.
+
+    private def assertNamesOwnerChange(line: String): Unit = {
+        assert(line.contains("change the tap's owner"), "names the change-owner action: " + line)
+        assert(line.contains("POST /api/v1/tap/owner"), "names the route: " + line)
+        assert(line.contains("administrator"), "says an administrator does it: " + line)
+        assert(!line.toLowerCase.contains("recreate"), "no longer says recreate: " + line)
+    }
+
+    test("the scheduled-feed line for an owner that may not load into the target names the owner change, not recreating the tap") {
+        val name = "remedy-outside-" + System.nanoTime()
+        val (_, warns) = withWarns {
+            TapOwnerScopeReport.feedReport(tap(name, "finance-ledger"), _ => ai.datris.auth.TapPrincipal.Resolved(salesKey), n => pipelines.get(n).orNull)
+        }
+        val lines = warns.filter(_.contains(name))
+        assert(lines.size == 1, warns.mkString("\n"))
+        assertNamesOwnerChange(lines.head)
+        assert(lines.head.contains("point the tap at a pipeline its owner may load into"), lines.head)
+        assert(audit.synchronized(audit.toList).count(e => e.resourceName.contains(name) && e.action == "feed-outside-owner-scope") == 1)
+    }
+
+    test("the scheduled-feed line for an owner that no longer exists names the owner change, not recreating the tap") {
+        val name = "remedy-unresolved-" + System.nanoTime()
+        val (_, warns) = withWarns {
+            TapOwnerScopeReport.feedReport(tap(name, "sales-orders", "gone-agent"), _ => ai.datris.auth.TapPrincipal.Unresolved, n => pipelines.get(n).orNull)
+        }
+        val lines = warns.filter(_.contains(name))
+        assert(lines.size == 1, warns.mkString("\n"))
+        assertNamesOwnerChange(lines.head)
+        assert(audit.synchronized(audit.toList).count(e => e.resourceName.contains(name) && e.action == "owner-unresolved") == 1)
+    }
 }

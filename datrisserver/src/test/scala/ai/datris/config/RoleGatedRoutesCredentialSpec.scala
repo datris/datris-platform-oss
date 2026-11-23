@@ -184,6 +184,31 @@ class RoleGatedRoutesCredentialSpec extends AnyFunSuite with BeforeAndAfterEach 
         }
     }
 
+    // Story: Change a tap's owner (plans/stories/tap-change-owner.md), O1. The
+    // route is gated to administrators and mapped to tap:update; the handler
+    // itself refuses every caller that is not full access
+    // (TapChangeOwnerRouteSpec), because the role gate admits a key holding
+    // the mapped capability.
+    test("POST /api/v1/tap/owner is role-gated to administrators and checked as tap:update") {
+        val rts = mappings.filter(rt => rt.method == "POST" && rt.pattern == "/api/v1/tap/owner")
+        assert(rts.size == 1, "one handler for POST /api/v1/tap/owner: " + rts)
+        val rt = rts.head
+        assert(rt.cls.getName == "ai.datris.api.TapAPIController", rt.toString)
+        assert(rt.roles == Set(User.RoleAdmin), rt.toString)
+        assert(
+            ai.datris.auth.CapabilityRoutes.lookup("POST", "/api/v1/tap/owner") == ai.datris.auth.RouteCheck.Require("tap", "update"),
+            "mapped with the tap rows as tap:update"
+        )
+        assert(gate(rt, session = Some(admin)) == Proceed)
+        assert(gate(rt, resolved = Some(legacy), apiKey = Some("legacy-value")) == Proceed)
+        for (u <- Seq(editor, viewer, restrictedEditor, restrictedViewer)) assert(gate(rt, session = Some(u)) == InsufficientRole, u.username)
+        assert(gate(rt) == Refused401)
+        // API keys off, user sign-in on: only a signed-in administrator passes.
+        DatrisEnvironment.values = keysOn.copy(useApiKeys = false)
+        assert(gate(rt, resolved = Some(anonymous)) == InsufficientRole)
+        assert(gate(rt, session = Some(admin), resolved = Some(anonymous)) == Proceed)
+    }
+
     // ------------------------------------------------------------ Decision 6
 
     test("no credential, keys on: every role-gated route answers 401 Authentication required") {

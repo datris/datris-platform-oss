@@ -1358,4 +1358,58 @@ class DoctorServiceSpec extends AnyFunSuite {
     test("LiveProbes waits 15 s at most for the tap owner scan") {
         assert(LiveProbes.TapOwnerScanTimeoutMs == 15000L)
     }
+
+    // Story: Change a tap's owner (plans/stories/tap-change-owner.md),
+    // Acceptance bullet 6 (`DoctorServiceSpec`): both tap rows name the
+    // administrator's owner change as the remedy instead of recreating the
+    // tap. Widening the owner stays a remedy. Row ids, statuses and details
+    // do not change.
+
+    private val ChangeOwnerAction = "POST /api/v1/tap/owner"
+
+    private def assertNamesOwnerChange(fix: String): Unit = {
+        assert(fix.contains("change the tap's owner"), "names the change-owner action: " + fix)
+        assert(fix.contains(ChangeOwnerAction), "names the route: " + fix)
+        assert(fix.contains("administrator"), "says an administrator does it: " + fix)
+        assert(!fix.toLowerCase.contains("recreate"), "no longer says recreate: " + fix)
+        assert(!fix.contains("delete it and save it again"), "no longer says delete and save again: " + fix)
+    }
+
+    test("tap.owner_scope: the fix names the owner change, not recreating the tap; id, status and detail unchanged") {
+        val f = ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "rita-finance", "finance-ledger", "session:rita")
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(List(f), Nil))).run()
+        assert(r.id == "tap.owner_scope" && r.status == "warn" && r.severity == "warn", r.toString)
+        assert(
+            r.detail == "1 tap(s) will read or feed less in the next release, which holds each tap to its owner's access " +
+                "(nothing changes in this release; callback reads are known only for taps run since the upgrade). " +
+                TapOwnerScopeCheck.Groups.toMap.apply(TapOwnerScopeScan.FeedOutsideOwner) + " (1): rita-finance -> finance-ledger (session:rita)",
+            r.detail
+        )
+        assertNamesOwnerChange(r.remediation)
+        // widening the owner stays a remedy
+        assert(r.remediation.contains("grant the owning user edit on the target pipeline's catalog"), r.remediation)
+        assert(r.remediation.contains("point the tap at a pipeline its owner may load into"), r.remediation)
+        // every finding group gets the same fix text
+        val all = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings, Nil))).run()
+        assertNamesOwnerChange(all.remediation)
+        assert(all.status == "warn")
+    }
+
+    test("tap.references: the fix names the owner change, not recreating the tap; id, status and detail unchanged") {
+        val p = new FakeProbes() {
+            override def tapReferenceScan(): TapReferenceScan.Result =
+                TapReferenceScan.Result(List(TapReferenceScan.Finding(TapReferenceScan.SecretOutsideOwner, "builder-weather")), Nil)
+        }
+        val all = DoctorService.checks(p, slots, "1.62.0", Map.empty)
+        val r = all.find(_.id == "tap.references").getOrElse(fail("no tap.references check in " + all.map(_.id))).run()
+        assert(r.id == "tap.references" && r.status == "warn" && r.severity == "warn", r.toString)
+        assert(
+            r.detail == "1 finding(s) that the next release refuses or changes (nothing is refused in this release): " +
+                TapReferencesCheck.Groups.toMap.apply(TapReferenceScan.SecretOutsideOwner) + " (1): builder-weather",
+            r.detail
+        )
+        assertNamesOwnerChange(r.remediation)
+        // using a secret the owner may read stays a remedy
+        assert(r.remediation.contains("use a tap secret the owner may read"), r.remediation)
+    }
 }
