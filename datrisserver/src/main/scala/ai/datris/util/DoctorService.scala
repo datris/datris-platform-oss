@@ -671,7 +671,11 @@ object DoctorService {
                     else Some(label + " (" + in.size + "): " + TapOwnerScopeCheck.named(in.map(_.name)))
                 }
                 val also = unreadableText(names)
-                findings.size + " finding(s) that the next release refuses or changes (nothing is refused in this release): " +
+                val now =
+                    if (findings.exists(_.group == TapReferenceScan.NotOwnScript))
+                        " (in this release only a script upload by a user or key limited to a catalog or to what it created, for a tap whose script file is not its own, is refused)"
+                    else " (nothing is refused in this release)"
+                findings.size + " finding(s) that the next release refuses or changes" + now + ": " +
                     groups.mkString("; ") + (if (also.isEmpty) "" else "; also " + also) + (if (names) "" else TapReferencesCheck.NamesHidden)
             }
             val fix =
@@ -702,7 +706,7 @@ object DoctorService {
             TapReferenceScan.OutsideArea ->
                 "taps whose script sits outside the tap script area; in the next release the script store reads only scripts in that area, so they will not run, test or save until the script is stored again",
             TapReferenceScan.NotOwnScript ->
-                "taps stored in a code repository whose script file is not their own (<path prefix><tap name>.py under the current or a recorded earlier path prefix); deleting such a tap now leaves the file in place, and in the next release the tap's next script upload is stored at its own path and the earlier file is left",
+                "taps stored in a code repository whose script file is not their own (<path prefix><tap name>.py under the current or a recorded earlier path prefix); deleting such a tap now leaves the file in place, a script upload for it by a user or key limited to a catalog or to what it created is now refused, and in the next release the tap's next script upload is stored at its own path and the earlier file is left",
             TapReferenceScan.SharedScript ->
                 "taps sharing one script across catalogs or owners; in the next release a user or key limited to a catalog or to what it created may point a tap only at its own script or the script of a tap it may read",
             TapReferenceScan.SecretOutsideOwner ->

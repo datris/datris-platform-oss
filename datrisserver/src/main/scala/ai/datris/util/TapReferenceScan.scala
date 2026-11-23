@@ -84,7 +84,11 @@ object TapReferenceScan {
       * `repoPathPrefix`: the enabled code repository's path prefix ("" for
       * none; may throw) and `repoEarlierPrefixes`: its recorded earlier path
       * prefixes (may throw), each read at most once and only when a tap
-      * stores its script in a repository. An owner is resolved, and a secret read, only
+      * stores its script in a repository. `ownPrefixes`, when given, is what
+      * the [[NotOwnScript]] group is judged against instead: the stored
+      * repository configuration's prefix and earlier prefixes, whether or not
+      * the repository is enabled (None: no stored configuration, and the
+      * group is skipped; may throw), read at most once. An owner is resolved, and a secret read, only
       * for a tap with a secret, each distinct label and secret at most once
       * per scan; a failed lookup lists the tap under `unreadable`. Findings
       * in group order, taps in the order given. */
@@ -94,7 +98,8 @@ object TapReferenceScan {
         secretOwner: String => Option[Option[String]],
         reviewKeys: List[String],
         repoPathPrefix: () => String = () => "",
-        repoEarlierPrefixes: () => Seq[String] = () => Nil
+        repoEarlierPrefixes: () => Seq[String] = () => Nil,
+        ownPrefixes: () => Option[Seq[String]] = null
     ): Result = {
         val live = Option(taps).getOrElse(Nil).filter(t => t != null && t.name != null && !placeholder(t))
         val unreadable = mutable.ListBuffer[String]()
@@ -117,10 +122,14 @@ object TapReferenceScan {
         }
 
         lazy val earlier: Try[Seq[String]] = Try(Option(repoEarlierPrefixes()).getOrElse(Nil).filter(_ != null))
+        lazy val judgedAgainst: Try[Option[Seq[String]]] =
+            if (ownPrefixes == null) for (pre <- prefix; old <- earlier) yield Some(pre +: old)
+            else Try(Option(ownPrefixes()).flatten.map(_.filter(_ != null)))
         val notOwn = live.flatMap { t =>
             TapReferenceRules.effectiveRepo(t).flatMap { p =>
-                (for (pre <- prefix; old <- earlier) yield TapScriptOwnership.ownRepo(t.name, p, pre +: old)) match {
-                    case Success(own) => if (own) None else Some(Finding(NotOwnScript, t.name))
+                judgedAgainst match {
+                    case Success(None) => None
+                    case Success(Some(prefixes)) => if (TapScriptOwnership.ownRepo(t.name, p, prefixes)) None else Some(Finding(NotOwnScript, t.name))
                     case Failure(_) =>
                         markUnreadable(t.name)
                         None
@@ -185,7 +194,9 @@ object TapReferenceScan {
       * the first `session:` owner), the API key store and its metadata
       * ([[APIKeyValidator.keyDirectory]], on the first key owner), and each
       * distinct secret of a tap whose owner's tap read is scoped, and the
-      * repository configuration, once (on the first tap stored in a repository). */
+      * repository configuration, enabled for the script area group and as
+      * stored for the not-own group, each once (on the first tap stored in a
+      * repository). */
     def liveScan(): Result = {
         val env = DatrisEnvironment.current
         val taps = TapConfigIO.readAll(env.tapTableName)
@@ -198,7 +209,15 @@ object TapReferenceScan {
             n => TapAPIController.liveSecretOwner(n),
             TapReviewAccessLog.labels(),
             () => repo.get.map(c => TapReferenceRules.normalizePrefix(c.pathPrefix)).getOrElse(""),
-            () => repo.get.map(TapScriptOwnership.earlierOf).getOrElse(Nil)
+            () => repo.get.map(TapScriptOwnership.earlierOf).getOrElse(Nil),
+            () => storedOwnPrefixes(CodeRepoConfigIO.read())
         )
     }
+
+    /** What the [[NotOwnScript]] group is judged against on a live install:
+      * the stored repository configuration's prefix and recorded earlier
+      * prefixes, whether or not the repository is enabled (both survive a
+      * disable); None when nothing is stored. */
+    def storedOwnPrefixes(stored: Option[ai.datris.model.CodeRepoConfig]): Option[Seq[String]] =
+        stored.filter(_ != null).map(TapScriptOwnership.prefixesOf)
 }

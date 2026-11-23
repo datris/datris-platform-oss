@@ -325,10 +325,30 @@ object TapOwnerScopeReport {
             reportReference(request, tapName, rule, site, reason, later)
         }
 
-    private def reportReference(request: HttpServletRequest, tapName: String, rule: String, site: String, reason: String, later: String): Unit = {
+    /** Rule S4 at the script upload (`site` "script") enforced for a caller
+      * limited to a catalog or to what it created: the upload was refused
+      * and nothing was written. One WARN line and one
+      * `tap/reference-would-be-refused` audit row (outcome `denied`, metadata
+      * `rule`, `site`, `enforced: true`) for every refusal. `reason` names
+      * nothing of another tap. Never marks the request as audited; never
+      * throws. */
+    def scriptStoreRefused(request: HttpServletRequest, tapName: String, rule: String, site: String, reason: String): Unit =
+        safe("script store refused") {
+            reportReference(request, tapName, rule, site, reason, "The upload was refused and nothing was written.", enforced = true)
+        }
+
+    private def reportReference(
+        request: HttpServletRequest,
+        tapName: String,
+        rule: String,
+        site: String,
+        reason: String,
+        later: String,
+        enforced: Boolean = false
+    ): Unit = {
         if (tapName == null || tapName.isEmpty || CatalogOps.Placeholder.is(tapName)) return
         val env = Option(ai.datris.model.DatrisEnvironment.current).map(e => String.valueOf(e.environment)).getOrElse("null")
-        if (!firstToday(ReferenceWouldBeRefusedAction + "|" + env + "|" + rule + "|" + tapName)) return
+        if (!enforced && !firstToday(ReferenceWouldBeRefusedAction + "|" + env + "|" + rule + "|" + tapName)) return
         val label = CapabilityCheck.resolvedKey(request).map(_.label).orNull
         logger.warn(
             "Tap " + q(LogSafe.text(tapName)) + ": " + reason + " (" + site + " by " + q(LogSafe.text(label)) + "). " + later
@@ -337,7 +357,7 @@ object TapOwnerScopeReport {
             val md = new JsonObject()
             md.addProperty("rule", rule)
             md.addProperty("site", site)
-            md.addProperty("enforced", false)
+            md.addProperty("enforced", enforced)
             AuditLog.submit(
                 AuditEntry(
                     ts = Instant.now(),
@@ -346,7 +366,7 @@ object TapOwnerScopeReport {
                     action = ReferenceWouldBeRefusedAction,
                     resourceType = Some("tap"),
                     resourceName = Option(tapName),
-                    outcome = "warning",
+                    outcome = if (enforced) "denied" else "warning",
                     request = Option(request).map(AuditLog.requestInfo),
                     metadata = Some(md)
                 )

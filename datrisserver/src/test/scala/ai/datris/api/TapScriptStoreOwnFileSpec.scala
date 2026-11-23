@@ -396,6 +396,133 @@ class TapScriptStoreOwnFileSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
+    // ================================================================ S4 for limited callers: refused
+    //
+    // Owner decision: rule S4 is enforced now for callers limited to a catalog
+    // or to what they created (a restricted user's session, a key scoped by
+    // catalog or owner). Their upload for a stored repository tap whose
+    // stored path is not its own file writes nothing and is a 409 that names
+    // only the caller's own tap and tells it to ask an administrator to move
+    // the script to the tap's own path; the audit row is written with
+    // `enforced: true`. Unrestricted callers stay report-only. Under log-only
+    // capability mode a request the route gate passed only as a would-deny
+    // goes ahead and is reported, as before.
+
+    private def limitedOwners: Seq[(ResolvedKey, String)] = Seq(salesKey -> "session:ada", builder -> "builder", rita -> "session:ada")
+
+    private def logOnlyReq(rk: ResolvedKey, path: String): HttpServletRequest = {
+        val (r, attrs) = ScopeDenialFixtures.request(rk, "POST", path)
+        attrs.put(ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr, java.lang.Boolean.TRUE)
+        r
+    }
+
+    private def uploadBody(name: String): java.util.Map[String, String] = {
+        val body = new java.util.HashMap[String, String]()
+        body.put("tapName", name)
+        body.put("script", "def fetch():\n    return [1]")
+        body
+    }
+
+    test("S4: a limited caller's upload for a tap whose stored path is not its own file writes nothing and is a 409 naming only its own tap") {
+        for ((rk, owner) <- limitedOwners) {
+            val name = uniq("hand-placed")
+            val other = uniq("finance-other")
+            val path = Prefix + "lib/" + other + ".py"
+            val w = new World(Seq(repoTap(name, path, owner = owner)))
+            val (r, warns) = withWarns(upload(rk, w, name))
+            assert(status(r) == 409, rk.label + ": " + r)
+            val error = JsonParser.parseString(r.getBody).getAsJsonObject.get("error").getAsString
+            assert(error == TapAPIController.notOwnUploadMessage(name), error)
+            assert(error.contains(name) && error.contains("administrator") && error.contains("own path"), error)
+            assert(!r.getBody.contains(path) && !r.getBody.contains(other) && !r.getBody.contains("lib/"), r.getBody)
+            w.nothingWritten()
+            assert(warns.count(_.contains(name)) == 1, warns.mkString("\n"))
+            val rows = reportRows(name)
+            assert(rows.size == 1, rows.toString)
+            val md = rows.head.metadata.getOrElse(fail("no metadata"))
+            assert(md.get("enforced").getAsBoolean && md.get("rule").getAsString == "S4" && md.get("site").getAsString == "script", md.toString)
+            assert(rows.head.outcome == "denied", rows.head.toString)
+        }
+    }
+
+    test("S4: each refusal of a limited caller writes its own audit row") {
+        val name = uniq("hand-placed-twice")
+        val w = new World(Seq(repoTap(name, Prefix + "lib/shared.py")))
+        withWarns(Seq(upload(salesKey, w, name), upload(salesKey, w, name)))
+        assert(reportRows(name).size == 2, reportRows(name).toString)
+        w.nothingWritten()
+    }
+
+    test("S4: a limited caller's upload for a tap at its own path, under the current or a recorded earlier prefix, goes ahead as before") {
+        for ((rk, owner) <- limitedOwners) {
+            val current = uniq("own-current")
+            val earlier = uniq("own-earlier")
+            val w = new World(
+                Seq(repoTap(current, Prefix + current + ".py", owner = owner), repoTap(earlier, "old-taps/" + earlier + ".py", owner = owner)),
+                repoCfg(Seq("old-taps/"))
+            )
+            val (rs, warns) = withWarns(Seq(upload(rk, w, current), upload(rk, w, earlier)))
+            assert(rs.forall(r => status(r) == 200), rk.label + ": " + rs)
+            assert(w.repo.writes.toList == List(current -> (Prefix + current + ".py"), earlier -> ("old-taps/" + earlier + ".py")), w.repo.writes.toString)
+            // no script file rule is reported (other report-only rules may write their own lines)
+            assert(!warns.exists(_.contains("own script file")), warns.mkString("\n"))
+            assert(reportRows(current).isEmpty && reportRows(earlier).isEmpty)
+        }
+    }
+
+    test("S4: a limited caller's upload of a built-in tap is not affected") {
+        for ((rk, _) <- limitedOwners.take(1)) {
+            val name = uniq("builtin")
+            val w = new World(Seq(builtInTap(name, "tap-scripts/" + name + "_1a2b3c4d.py")))
+            assert(status(upload(rk, w, name)) == 200, rk.label)
+            assert(w.builtIn.writes.size == 1 && w.repo.writes.isEmpty)
+        }
+    }
+
+    test("S4: an unrestricted caller's upload still goes ahead at the stored path and is reported, not refused") {
+        for (rk <- unrestricted) {
+            val name = uniq("hand-placed-admin")
+            val path = Prefix + "lib/shared.py"
+            val w = new World(Seq(repoTap(name, path)))
+            val (r, warns) = withWarns(upload(rk, w, name))
+            assert(status(r) == 200, rk.label + ": " + r)
+            assert(w.repo.writes.toList == List(name -> path), w.repo.writes.toString)
+            assertReportedOnce(name, warns)
+        }
+    }
+
+    test("S4: under log-only capability mode a request the route gate passed only as a would-deny goes ahead and is reported, as before") {
+        val name = uniq("hand-placed-logonly")
+        val path = Prefix + "lib/shared.py"
+        val w = new World(Seq(repoTap(name, path)))
+        val (r, warns) = withWarns(new TapAPIController().storeScriptWith(uploadBody(name), logOnlyReq(salesKey, "/api/v1/tap/script"), w.io))
+        assert(status(r) == 200, r.toString)
+        assert(w.repo.writes.toList == List(name -> path), w.repo.writes.toString)
+        assertReportedOnce(name, warns)
+    }
+
+    // ================================================================ built-in scripts written under another name
+
+    test("a tap delete removes a built-in script written under a name no stored tap has, with no warning") {
+        val name = uniq("final-name")
+        val draft = uniq("draft-name")
+        val key = "tap-scripts/" + draft + "_0a1b2c3d.py"
+        val w = new World(Seq(builtInTap(name, key)))
+        assert(TapAPIController.deleteTapScript(w.taps(name), adapter(w.builtIn), lookups(w)).isEmpty)
+        assert(w.builtIn.deletes.toList == List(key), w.builtIn.deletes.toString)
+    }
+
+    test("a tap delete keeps a built-in script written under another name while a stored tap has that name or uses it, with the warning") {
+        val name = uniq("final-name")
+        val draft = uniq("draft-name")
+        val key = "tap-scripts/" + draft + "_0a1b2c3d.py"
+        for (second <- Seq(builtInTap(draft, "tap-scripts/" + draft + "_99999999.py"), builtInTap(uniq("copy"), key))) {
+            val w = new World(Seq(builtInTap(name, key), second))
+            assert(TapAPIController.deleteTapScript(w.taps(name), adapter(w.builtIn), lookups(w)) == Seq(TapScriptOwnership.KeptWarning))
+            assert(w.builtIn.deletes.isEmpty && w.builtIn.files.contains(key))
+        }
+    }
+
     // ================================================================ S1: the script step of a tap delete
 
     private def lookups(w: World, cfg: CodeRepoConfig = repoCfg()): TapScriptOwnership.Lookups =

@@ -297,6 +297,141 @@ class TapScriptOwnershipSpec extends AnyFunSuite {
         assert(!TapScriptOwnership.uploadTargetTaken("anything", Prefix + "anything.py", Nil))
     }
 
+    // ================================================================ built-in scripts written under another name
+    //
+    // A tap created in the wizard and renamed before its first save, or whose
+    // script was generated before it had its name, references a built-in
+    // script whose key carries another name. Such a key, in the store's form
+    // tap-scripts/<N>_<8 hex>.py, may be deleted for the tap that references
+    // it when no stored tap is named N and no other stored tap's current
+    // script is that key. Any other key, and every repository file, is judged
+    // as before.
+    //
+    //   def builtInKeyName(key: String): Option[String]   // N for a key of the store's form, else None
+
+    private val draftKey = "tap-scripts/draft-name_0a1b2c3d.py"
+
+    private def withWarns[T](f: => T): (T, List[String]) = {
+        val rootLogger =
+            org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).asInstanceOf[ch.qos.logback.classic.Logger]
+        val appender = new ch.qos.logback.core.read.ListAppender[ch.qos.logback.classic.spi.ILoggingEvent]()
+        appender.start()
+        rootLogger.addAppender(appender)
+        try {
+            val r = f
+            (r, appender.list.asScala.toList.filter(_.getLevel == ch.qos.logback.classic.Level.WARN).map(_.getFormattedMessage))
+        } finally rootLogger.detachAppender(appender)
+    }
+
+    test("the name in a built-in key is read only from the exact form the built-in store writes") {
+        assert(TapScriptOwnership.builtInKeyName("tap-scripts/orders_1a2b3c4d.py").contains("orders"))
+        assert(TapScriptOwnership.builtInKeyName("tap-scripts/orders_x_1a2b3c4d.py").contains("orders_x"))
+        assert(TapScriptOwnership.builtInKeyName("tap-scripts/a/b_deadbeef.py").contains("a/b"))
+        val none = Seq(
+            "tap-scripts/orders_1a2b3c4.py",
+            "tap-scripts/orders_1a2b3c4g.py",
+            "tap-scripts/orders.py",
+            "tap-scripts/_1a2b3c4d.py",
+            "tap-scripts//orders_1a2b3c4d.py",
+            "tap-scripts/x/../orders_1a2b3c4d.py",
+            "tap-scripts/orders_1a2b3c4d.py.bak",
+            "uploads/orders_1a2b3c4d.py",
+            "pipeline-scripts/orders/orders_1a2b3c4d.py",
+            "",
+            null
+        )
+        for (k <- none) assert(TapScriptOwnership.builtInKeyName(k).isEmpty, String.valueOf(k))
+        // it agrees with the own-file test
+        TapScriptGeneratorEnv.withEnv {
+            val objects = new InMemoryObjects
+            for (name <- Seq("orders", "a/b", "sales.orders", "x_y")) {
+                val key = TapScriptGenerator.storeScript(name, "print(1)", null, objects = objects)
+                assert(TapScriptOwnership.builtInKeyName(key).contains(name), key)
+            }
+        }
+    }
+
+    test("a delete removes a built-in script written under a name no stored tap has, when no other stored tap uses it") {
+        val renamed = builtIn("final-name", draftKey)
+        val counted = new Counted(Seq(renamed, otherTap))
+        assert(TapScriptOwnership.deletePlan(ScriptRef("final-name", "minio", scriptPath = draftKey), counted.lookups) == Delete)
+        assert(counted.tapReads.get == 1 && counted.configReads.get == 0, counted.tapReads.get + "/" + counted.configReads.get)
+    }
+
+    test("a built-in script written under another name is kept while a stored tap has that name or another stored tap uses it") {
+        val named = Seq(builtIn("final-name", draftKey), builtIn("draft-name", "tap-scripts/draft-name_99999999.py"))
+        assert(TapScriptOwnership.deletePlan(ScriptRef("final-name", "minio", scriptPath = draftKey), new Counted(named).lookups) == Keep)
+        val used = Seq(builtIn("final-name", draftKey), builtIn("copy", draftKey))
+        assert(TapScriptOwnership.deletePlan(ScriptRef("final-name", "minio", scriptPath = draftKey), new Counted(used).lookups) == Keep)
+        val respelled = Seq(builtIn("final-name", draftKey), builtIn("copy", "tap-scripts//draft-name_0a1b2c3d.py"))
+        assert(TapScriptOwnership.deletePlan(ScriptRef("final-name", "minio", scriptPath = draftKey), new Counted(respelled).lookups) == Keep)
+        // keys not in the store's form are still kept, and read no listing
+        val notForm = new Counted(Seq(builtIn("final-name", "tap-scripts/draft-name.py")))
+        for (k <- Seq("tap-scripts/draft-name.py", "tap-scripts/draft-name_1.py", "uploads/draft-name_0a1b2c3d.py"))
+            assert(TapScriptOwnership.deletePlan(ScriptRef("final-name", "minio", scriptPath = k), notForm.lookups) == Keep, k)
+        assert(notForm.tapReads.get == 0)
+    }
+
+    test("a repository file named after another tap is still kept: the repository rule is unchanged") {
+        val taps = Seq(repo("final-name", Prefix + "draft-name.py"))
+        assert(TapScriptOwnership.deletePlan(ScriptRef("final-name", "github", scriptRepoPath = Prefix + "draft-name.py"), new Counted(taps).lookups) == Keep)
+    }
+
+    test("a built-in script written under another name is kept, with one WARN line, when the tap listing cannot be read") {
+        val failing = Lookups(() => throw new IllegalStateException("db password=s3cr3t unreachable"), () => Some(cfg()))
+        val (plan, warns) = withWarns(TapScriptOwnership.deletePlan(ScriptRef("final-name", "minio", scriptPath = draftKey), failing))
+        assert(plan == Keep)
+        val mine = warns.filter(_.contains("final-name"))
+        assert(mine.size == 1, warns.mkString("\n"))
+        assert(!mine.head.contains("s3cr3t") && !mine.head.contains("draft-name"), mine.head)
+    }
+
+    test("the kept-on-unreadable-listing WARN line is written for an own file too, in either store, and never on a readable listing") {
+        val failing = Lookups(() => throw new IllegalStateException("down"), () => Some(cfg()))
+        val (_, builtInWarns) = withWarns(TapScriptOwnership.deletePlan(ScriptRef("orders", "minio", scriptPath = ordersKey), failing))
+        assert(builtInWarns.count(_.contains("'orders'")) == 1, builtInWarns.mkString("\n"))
+        val (_, repoWarns) = withWarns(TapScriptOwnership.deletePlan(ScriptRef("orders", "github", scriptRepoPath = Prefix + "orders.py"), failing))
+        assert(repoWarns.count(_.contains("'orders'")) == 1, repoWarns.mkString("\n"))
+        val (_, none) = withWarns(TapScriptOwnership.deletePlan(ScriptRef("orders", "minio", scriptPath = ordersKey), new Counted(Nil).lookups))
+        assert(!none.exists(_.contains("'orders'")), none.mkString("\n"))
+    }
+
+    test("version cleanup deletes built-in scripts written under a name no stored tap has, and keeps the rest") {
+        val pruned = Seq(
+            "tap-scripts/final-name_11111111.py", // own, unused
+            draftKey, // another name, no such tap, unused
+            "tap-scripts/other_22222222.py", // another name, that tap exists
+            "tap-scripts/shared-draft_33333333.py", // another name, no such tap, but another tap's current script
+            "tap-scripts/final-name_44444444.py", // own, the tap's current script
+            "tap-scripts/draft.py", // not in the store's form
+            "uploads/x.py"
+        )
+        val taps = Seq(
+            builtIn("final-name", "tap-scripts/final-name_44444444.py"),
+            builtIn("other", "tap-scripts/other_55555555.py"),
+            builtIn("copy", "tap-scripts/shared-draft_33333333.py")
+        )
+        val reads = new AtomicInteger(0)
+        val out = TapScriptOwnership.deletableBuiltIn("final-name", pruned, () => { reads.incrementAndGet(); taps })
+        assert(out.toSet == Set("tap-scripts/final-name_11111111.py", draftKey), out.toString)
+        assert(reads.get == 1)
+        // nothing in the store's form: no listing read
+        val none = new AtomicInteger(0)
+        assert(TapScriptOwnership.deletableBuiltIn("final-name", Seq("tap-scripts/draft.py", "uploads/x.py"), () => { none.incrementAndGet(); taps }).isEmpty)
+        assert(none.get == 0)
+    }
+
+    test("version cleanup deletes nothing, with one WARN line, when the tap listing cannot be read") {
+        val (out, warns) =
+            withWarns(TapScriptOwnership.deletableBuiltIn(
+                "final-name",
+                Seq(draftKey, "tap-scripts/final-name_11111111.py"),
+                () => throw new IllegalStateException("down")
+            ))
+        assert(out.isEmpty)
+        assert(warns.count(_.contains("'final-name'")) == 1, warns.mkString("\n"))
+    }
+
     // ================================================================ earlier prefixes on the repository configuration
 
     private def body(json: String): CodeRepoConfig = new Gson().fromJson(json, classOf[CodeRepoConfig])

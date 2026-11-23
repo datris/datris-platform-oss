@@ -9,7 +9,7 @@ import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, VersionActor}
 import ai.datris.build.sbt.BuildInfo
-import ai.datris.model.{CodeGenScript, DatrisEnvironment, DatrisException, PipelineConfig, PipelineStatusRollup, TapConfig}
+import ai.datris.model.{CodeGenScript, CodeRepoConfig, DatrisEnvironment, DatrisException, PipelineConfig, PipelineStatusRollup, TapConfig}
 import ai.datris.util.{
     APIKeyValidator,
     CatalogArchive,
@@ -31,6 +31,7 @@ import ai.datris.util.{
     TapConfigIO,
     TapDependencies,
     TapRunner,
+    TapScriptOwnership,
     TapScriptResult,
     TapState,
     TapStateIO,
@@ -311,16 +312,13 @@ class CatalogAPIController {
                         // listing, read at most once (a failed read is kept
                         // too, so each delete keeps its file), serves every tap
                         // delete; taps deleted so far no longer count as using a file.
-                        val read = TapAPIController.once(() => scala.util.Try(TapConfigIO.listing()))
-                        val listing: () => Seq[TapConfig] = () => read().get
-                        val deletedTaps = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
-                        val remaining: () => Seq[TapConfig] = () => listing().filter(t => t != null && !deletedTaps.contains(t.name))
+                        val (remaining, markDeleted) = CatalogAPIController.cascadeListing(() => TapConfigIO.listing())
                         val t = CatalogOps.executeCollecting(members.taps.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readTap(n, name)
                                 CatalogAPIController.assertMemberWrite(request, "tap", "delete", live.catalog, live.createdByKeyLabel)
                                 val out = tapController.deleteTapInternal(n, request, checkScope = false, allTaps = remaining).getOrElse(Nil)
-                                deletedTaps.add(n)
+                                markDeleted(n)
                                 out
                             }
                         }
@@ -695,7 +693,10 @@ class CatalogAPIController {
                         )
                     case None => CatalogArchive.RepoScriptPlan(Nil, Set.empty, scripts.keySet, Set.empty, Set.empty)
                 }
-                val allClashes = nameClashes ++ repoPlan.clashes
+                // Rule S2: a restored script never replaces, with no reference
+                // of that tap behind it, the file another stored tap runs from.
+                val targetClashes = repoCfg.map(cfg => CatalogAPIController.restoreTargetClashes(repoPlan, cfg, taps)).getOrElse(Nil)
+                val allClashes = nameClashes ++ repoPlan.clashes ++ targetClashes
                 if (allClashes.nonEmpty)
                     return conflict(
                         "The archive cannot be restored as '" + name + "': these names already exist on this install. " +
@@ -1293,6 +1294,43 @@ class CatalogAPIController {
 }
 
 object CatalogAPIController {
+
+    /** The tap listing a cascade delete hands to every tap delete: `read`
+      * is called at most once for the whole cascade (a failed read is kept,
+      * so every later delete sees it fail and keeps its file), and a tap
+      * marked deleted no longer counts as using a file. Returns the listing
+      * each delete reads and the call that marks a tap deleted. */
+    private[api] def cascadeListing(read: () => Seq[TapConfig]): (() => Seq[TapConfig], String => Unit) = {
+        val once = TapAPIController.once(() => scala.util.Try(read()))
+        val deleted = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
+        (() => once().get.filter(t => t != null && !deleted.contains(t.name)), n => { deleted.add(n); () })
+    }
+
+    /** Rule S2 at a catalog restore onto a code repository: for each tap the
+      * restore would commit (`plan.write`) whose live copy holds no
+      * repository reference of its own to write over (missing, on built-in
+      * storage, or with no repository path), one clash when its file
+      * (`<prefix><tap>.py`) is, in any spelling, the current repository
+      * script of a stored tap of another name
+      * ([[TapScriptOwnership.uploadTargetTaken]]). The restore then refuses
+      * as for any other clash, before anything is written. A clash names
+      * only the restored tap and its own file. `liveTaps`: every stored tap. */
+    private[api] def restoreTargetClashes(plan: CatalogArchive.RepoScriptPlan, cfg: CodeRepoConfig, liveTaps: Seq[TapConfig]): Seq[String] = {
+        val taps = Option(liveTaps).getOrElse(Nil).filter(_ != null)
+        plan.write.toSeq.sorted.flatMap { tap =>
+            val live = taps.find(_.name == tap)
+            val writesOverOwnReference =
+                live.exists(l => l.scriptStorage == "github" && l.scriptRepoPath != null && l.scriptRepoPath.nonEmpty)
+            if (writesOverOwnReference) None
+            else {
+                val path = scala.util.Try(GithubCodeStore.scriptRepoPath(tap, cfg)).toOption
+                path.filter(p => TapScriptOwnership.uploadTargetTaken(tap, p, taps)).map { p =>
+                    "tap '" + tap + "': script file '" + p + "' in the code repository (branch " + cfg.branch +
+                        ") is the script another tap runs from and would be replaced"
+                }
+            }
+        }
+    }
 
     /** The per-member decision of catalog rename (`update`), detach and
       * cascade delete (`delete`), before a member is written or deleted:

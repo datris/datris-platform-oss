@@ -1287,18 +1287,18 @@ class TapCodeStoreSpec extends AnyFunSuite {
         } finally TenantContext.clear()
     }
 
-    test("pruning reads no tap listing when no pruned object is the tap's own, and deletes nothing when the listing cannot be read") {
+    test("pruning reads no tap listing when no pruned object is a built-in script of the store's form, and deletes nothing when the listing cannot be read") {
         TenantContext.set(SpecEnv.testEnv)
         try {
             val objects = new MemObjects
             val bucket = SpecEnv.testEnv.environment + "-config"
-            val keys = Seq("tap-scripts/orders_0000000a.py", "tap-scripts/other_1a2b3c4d.py", "uploads/data.csv")
+            val keys = Seq("tap-scripts/orders_0000000a.py", "tap-scripts/other_1a2b3c4d.py", "tap-scripts/orders_1.py", "uploads/data.csv")
             keys.foreach(k => objects.objects((bucket, k)) = "x")
             TapScriptGenerator.deleteTapScripts(
                 "orders",
-                keys.drop(1),
+                keys.drop(2),
                 objects = objects,
-                allTaps = () => fail("no listing read for files that are not the tap's own")
+                allTaps = () => throw new AssertionError("no listing read for files that are not built-in scripts of the store's form")
             )
             TapScriptGenerator.deleteTapScripts("orders", keys, objects = objects, allTaps = () => throw new IllegalStateException("mongo down"))
             assert(objects.objects.keys.map(_._2).toSet == keys.toSet, objects.objects.keys.toString)

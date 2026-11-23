@@ -518,6 +518,73 @@ class TapReferenceScanSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(!r.namelessDetail.contains("hand-placed-tap"), r.namelessDetail)
     }
 
+    // With the code repository disabled the not-own group is judged against
+    // the stored repository configuration (its prefix and earlier prefixes
+    // survive a disable), never against an empty prefix; with no stored
+    // configuration the group is skipped.
+    //
+    //   def scan(..., ownPrefixes: () => Option[Seq[String]] = null): Result   // given: what notOwnScript is judged against
+    //   def storedOwnPrefixes(stored: Option[CodeRepoConfig]): Option[Seq[String]]
+
+    private def scanDisabled(taps: List[TapConfig], stored: Option[ai.datris.model.CodeRepoConfig]): TapReferenceScan.Result =
+        TapReferenceScan.scan(
+            taps,
+            resolve,
+            n => secretOwners.get(n),
+            Nil,
+            () => "", // no enabled repository
+            () => Nil,
+            () => TapReferenceScan.storedOwnPrefixes(stored)
+        )
+
+    test("scan with the code repository disabled: the not-own group is judged against the stored configuration's prefixes") {
+        val stored = ai.datris.model.CodeRepoConfig(
+            repo = "o/r",
+            enabled = false,
+            pathPrefix = "datris-taps/",
+            earlierPathPrefixes = new java.util.ArrayList[String](java.util.Arrays.asList("old-taps/"))
+        )
+        val taps = List(
+            repoTap("own", "datris-taps/own.py"),
+            repoTap("old-prefix", "old-taps/old-prefix.py"),
+            repoTap("hand-placed", "datris-taps/lib/shared.py")
+        )
+        val r = scanDisabled(taps, Some(stored))
+        assert(names(r, TapReferenceScan.NotOwnScript) == List("hand-placed"), r.toString)
+        assert(r.unreadable.isEmpty, r.toString)
+    }
+
+    test("scan with no stored repository configuration skips the not-own group") {
+        val taps = List(repoTap("own", "datris-taps/own.py"), repoTap("hand-placed", "datris-taps/lib/shared.py"))
+        val r = scanDisabled(taps, None)
+        assert(names(r, TapReferenceScan.NotOwnScript).isEmpty, r.toString)
+        assert(r.unreadable.isEmpty, r.toString)
+    }
+
+    test("scan: a stored configuration that cannot be read lists repository taps as unreadable, never as nothing to report") {
+        val r = TapReferenceScan.scan(
+            List(repoTap("hand-placed", "datris-taps/lib/shared.py")),
+            resolve,
+            n => secretOwners.get(n),
+            Nil,
+            () => "",
+            () => Nil,
+            () => throw new IllegalStateException("mongo down")
+        )
+        assert(r.unreadable == List("hand-placed"), r.toString)
+    }
+
+    test("the stored prefixes are the configured prefix then the recorded earlier ones, whether or not the repository is enabled") {
+        val stored = ai.datris.model.CodeRepoConfig(
+            pathPrefix = "datris-taps/",
+            enabled = false,
+            earlierPathPrefixes = new java.util.ArrayList[String](java.util.Arrays.asList("old-taps/"))
+        )
+        assert(TapReferenceScan.storedOwnPrefixes(Some(stored)).contains(Seq("datris-taps/", "old-taps/")))
+        assert(TapReferenceScan.storedOwnPrefixes(Some(stored.copy(enabled = true))).contains(Seq("datris-taps/", "old-taps/")))
+        assert(TapReferenceScan.storedOwnPrefixes(None).isEmpty)
+    }
+
     test("tap.references never errors with taps whose script file is not their own") {
         val many = (1 to 300).toList.map(i => TapReferenceScan.Finding(TapReferenceScan.NotOwnScript, "t" + i))
         for (in <- Seq(TapReferenceScan.Result(many, Nil), TapReferenceScan.Result(many.take(1), List("t-flaky")))) {

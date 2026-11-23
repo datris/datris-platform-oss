@@ -2459,7 +2459,7 @@ paths:
       tags: [Pipelines]
       summary: Restore a catalog from a zip backup
       description: |
-        Restores an archive produced by `GET /api/v1/catalog/{name}/export` as catalog `name` (the same or a new name, on the same or another install). A restore never merges: with `mode=new` (default) it is refused with 409 when catalog `name` already exists or any archived tap or pipeline name exists anywhere on the install (any catalog, either type), and nothing is written. With `mode=overwrite` (requires `confirm` equal to `name`) items already in `name` may be replaced; a name in another catalog is still a 409. When tap scripts are stored in a code repository, a script file already at branch head with different content is also a clash; identical content is reused without a new commit. Pipelines are saved exactly as `POST /api/v1/pipeline` saves them; tap scripts go to the install's default script storage; taps are saved with `enabled=false` and their run status cleared, so nothing runs until a user tests and enables them. Secrets are never written: `missingSecrets` lists the secrets the archived items reference that are absent on this install. Secrets are only checked where the key may read them: a key without secret read access gets a `<name>: not checked, this key may not read secrets` warning instead, whether or not the secret exists. Each tap's incremental state is restored for taps that did not exist before, unless `restoreState=false`. An archive with no members creates the empty catalog. Not transactional: failed members are listed under `failed` (207). Requires `pipeline:create`. Every member is scope-checked before anything is written: `tap:create` / `pipeline:create` in the target catalog as the caller, and for an item that already exists (overwrite) also `tap:update` / `pipeline:update` against its current catalog and owner. A refused member is listed under `failed` and nothing of it, including its validation schema, is written. Inline credentials (preprocessor and REST destination `bearerToken`/`apiKey`, `restEndpoint` row-function token parameters) are removed at export; the restore response's `warnings` names each one to re-enter. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        Restores an archive produced by `GET /api/v1/catalog/{name}/export` as catalog `name` (the same or a new name, on the same or another install). A restore never merges: with `mode=new` (default) it is refused with 409 when catalog `name` already exists or any archived tap or pipeline name exists anywhere on the install (any catalog, either type), and nothing is written. With `mode=overwrite` (requires `confirm` equal to `name`) items already in `name` may be replaced; a name in another catalog is still a 409. When tap scripts are stored in a code repository, a script file already at branch head with different content is also a clash; identical content is reused without a new commit. A tap script the restore would commit for a tap with no repository script of its own (new on this install, or live on built-in storage) is also a clash when its file is the script another stored tap runs from; the clash names only the restored tap and its file. Pipelines are saved exactly as `POST /api/v1/pipeline` saves them; tap scripts go to the install's default script storage; taps are saved with `enabled=false` and their run status cleared, so nothing runs until a user tests and enables them. Secrets are never written: `missingSecrets` lists the secrets the archived items reference that are absent on this install. Secrets are only checked where the key may read them: a key without secret read access gets a `<name>: not checked, this key may not read secrets` warning instead, whether or not the secret exists. Each tap's incremental state is restored for taps that did not exist before, unless `restoreState=false`. An archive with no members creates the empty catalog. Not transactional: failed members are listed under `failed` (207). Requires `pipeline:create`. Every member is scope-checked before anything is written: `tap:create` / `pipeline:create` in the target catalog as the caller, and for an item that already exists (overwrite) also `tap:update` / `pipeline:update` against its current catalog and owner. A refused member is listed under `failed` and nothing of it, including its validation schema, is written. Inline credentials (preprocessor and REST destination `bearerToken`/`apiKey`, `restEndpoint` row-function token parameters) are removed at export; the restore response's `warnings` names each one to re-enter. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -5153,8 +5153,11 @@ paths:
         Deletes the tap configuration and its script. Only the tap's own script
         file is deleted (on built-in storage the object written for the tap; in
         a code repository `{pathPrefix}{name}.py` under the current or a
-        recorded earlier prefix), and only when no other tap uses it; any other
-        file is left in place and `warnings` says so. A script stored in a code
+        recorded earlier prefix), and only when no other tap uses it. On
+        built-in storage an object the platform wrote for the tap under
+        another name (a tap renamed before its first save) is also deleted
+        when no tap has that name and no other tap uses it. Any other file is
+        left in place and `warnings` says so. A script stored in a code
         repository gets a delete commit unless its file was edited there since
         the recorded commit (or the repository cannot be reached); that file is
         kept and named in `warnings`. The tap is deleted in every case.
@@ -5525,7 +5528,14 @@ paths:
             script from that file (use another tap name); nothing is stored. A
             user or key limited to catalogs or to what it created gets, in the
             last case, the answer a refused script reference gives on save (403
-            for a key, 404 for a user).
+            for a key, 404 for a user). Also 409, with nothing stored, when a
+            user or key limited to catalogs or to what it created uploads the
+            script of a tap stored in the code repository whose stored path is
+            not the tap's own file (`{pathPrefix}{tapName}.py` under the
+            current or a recorded earlier prefix); the message names only that
+            tap and asks for an administrator to move the script to the tap's
+            own path. Other callers still have such a tap's script written at
+            its stored path.
         '500':
           description: Error (including missing tapName or script)
 

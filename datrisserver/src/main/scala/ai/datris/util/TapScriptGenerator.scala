@@ -478,14 +478,16 @@ object TapScriptGenerator {
     }
 
     /**
-     * Delete the tap `tapName`'s script objects among `paths` (version
-     * cleanup on a tap delete, and version-cap pruning): only the tap's own
-     * script objects (`tap-scripts/<tap>_<8 hex>.py`,
-     * [[TapScriptOwnership.ownBuiltIn]]) that no stored tap currently
-     * references. `allTaps` (the tap listing) is read once, and only when
-     * some path is the tap's own; a listing that cannot be read deletes
-     * nothing. Any path left in place gives one INFO line naming the tap
-     * (not the key) unless every such path is in `alreadyReported`.
+     * Delete the script objects among `paths` that the tap `tapName`'s
+     * versions recorded (version cleanup on a tap delete, and version-cap
+     * pruning): only objects no stored tap currently references that are
+     * the tap's own (`tap-scripts/<tap>_<8 hex>.py`,
+     * [[TapScriptOwnership.ownBuiltIn]]) or of that form under a name no
+     * stored tap has ([[TapScriptOwnership.deletableBuiltIn]]). `allTaps`
+     * (the tap listing) is read once, and only when some path is of that
+     * form; a listing that cannot be read deletes nothing. Any path left in
+     * place gives one INFO line naming the tap (not the key) unless every
+     * such path is in `alreadyReported`.
      */
     def deleteTapScripts(
         tapName: String,

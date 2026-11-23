@@ -126,8 +126,9 @@ object TapConfigIO {
         )
 
         // Retention cap: prune old snapshots and GC their now-unreferenced
-        // scripts: only this tap's own script objects that no stored tap
-        // references (the live listing is read only when one is pruned).
+        // scripts: only script objects no stored tap references that are this
+        // tap's own or were written under a name no stored tap has (the live
+        // listing is read only when such an object is pruned).
         TapScriptGenerator.deleteTapScripts(
             tapConfig.name,
             EntityVersionIO.prune(versionTable, tapConfig.name, env.versionCap),

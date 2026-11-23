@@ -662,6 +662,61 @@ object TapAPIController {
         }
     }
 
+    /** Rule S4 for a caller limited to a catalog or to what it created
+      * ([[CapabilityCheck.isLimited]]): Some when `store` would write the
+      * script of the stored repository tap `existing` at its stored path and
+      * that path is not the tap's own file ([[TapScriptOwnership.ownRepo]]
+      * under the current or a recorded earlier prefix). Then nothing may be
+      * written: 409 telling the caller to ask an administrator to move the
+      * script to the tap's own path, naming no path and no other tap, with
+      * one log line and one audit row ([[TapOwnerScopeReport.scriptStoreRefused]]).
+      * Never for an unrestricted caller (reported after the write, as
+      * before), and never when the route gate passed the request only under
+      * log-only capability mode ([[passedGateOnlyInLogOnly]]), which refuses
+      * nothing. Reads the repository configuration only for such a write; a
+      * configuration that cannot be read refuses nothing here. */
+    private[api] def notOwnUploadRefusal(
+        request: HttpServletRequest,
+        tapName: String,
+        store: TapCodeStore,
+        existing: TapConfig,
+        io: TapScriptUploadIO
+    ): Option[ResponseEntity[String]] = {
+        val writesAtStoredPath = store != null && store.storage == "github" && existing != null && existing.scriptStorage == "github" &&
+            existing.scriptRepoPath != null && existing.scriptRepoPath.nonEmpty
+        if (!writesAtStoredPath || !CapabilityCheck.isLimited(request) || passedGateOnlyInLogOnly(request)) None
+        else {
+            val notOwn = scala.util
+                .Try(io.repoConfig())
+                .toOption
+                .flatten
+                .exists(cfg => !TapScriptOwnership.ownRepo(tapName, existing.scriptRepoPath, TapScriptOwnership.prefixesOf(cfg)))
+            if (!notOwn) None
+            else {
+                TapOwnerScopeReport.scriptStoreRefused(
+                    request,
+                    tapName,
+                    "S4",
+                    "script",
+                    "a script upload by a caller limited to a catalog or to what it created was refused: the tap's stored code repository path " +
+                        "is not the tap's own script file"
+                )
+                Some(
+                    ResponseEntity
+                        .status(HttpStatus.CONFLICT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body[String](ApiErrors.errorBody(notOwnUploadMessage(tapName)))
+                )
+            }
+        }
+    }
+
+    /** The answer of [[notOwnUploadRefusal]]: names only the caller's own tap. */
+    def notOwnUploadMessage(tapName: String): String =
+        "The script of tap '" + tapName + "' is stored in the code repository at a file that is not this tap's own script file, " +
+            "so it cannot be updated by a user or key limited to a catalog or to what it created; nothing was written. " +
+            "Ask an administrator to move the script to the tap's own path (for example by moving it to built-in storage and back)."
+
     /** Rules S4 and S5, reported only: after the script upload stored a
       * script for `tapName`. S4: a stored repository tap whose stored path is
       * not its own file was written at that path (`existing` the stored tap).
@@ -689,7 +744,8 @@ object TapAPIController {
                             "script",
                             "a script was stored at the tap's stored code repository path, which is not the tap's own script file",
                             "A later release stores this tap's next script upload at its own path and points the tap at it; the earlier file is " +
-                                "left in place. Nothing changes in this release; `datris doctor` lists such taps under tap.references (reported once a day)."
+                                "left in place. In this release such an upload goes ahead for an unrestricted caller and is refused for a user or key " +
+                                "limited to a catalog or to what it created; `datris doctor` lists such taps under tap.references (reported once a day)."
                         )
                 }
             } else
@@ -714,7 +770,8 @@ object TapAPIController {
 
     /** The script step of a tap delete (rule S1): the tap's script file is
       * deleted, unless it was hand-edited (`deleteUnlessEdited`), only when
-      * it is the tap's own file and no other stored tap uses it
+      * it is the tap's own file, or a built-in script written under a name no
+      * stored tap has, and no other stored tap uses it
       * ([[TapScriptOwnership.deletePlan]]); otherwise it is left in place and
       * the one warning [[TapScriptOwnership.KeptWarning]] is returned. A tap
       * with no script reference deletes nothing and warns nothing. */
@@ -1923,7 +1980,8 @@ class TapAPIController {
             // taps they created. Loaded resource carries createdByKeyLabel.
             if (checkScope)
                 CapabilityCheck.assertVisibleToWrite(request, "tap", "delete", CatalogOps.scopeContext(existing.catalog, existing.createdByKeyLabel))
-            // Only the tap's own script file, used by no other stored tap, is
+            // Only the tap's own script file (or a built-in script written
+            // under a name no stored tap has), used by no other stored tap, is
             // deleted; any other file is left in place with a warning. For
             // repo-backed taps the delete commits a file removal (history is
             // preserved — that's the point of the repo), unless the file was
@@ -1969,9 +2027,10 @@ class TapAPIController {
 
         // Definition versions: hard-delete every snapshot for this tap AND
         // GC the script objects they pinned (now that we have the index to
-        // do it cleanly). Only the tap's own script objects that no stored
-        // tap references are deleted (the same listing as above); any other
-        // reference is left in place.
+        // do it cleanly). Only script objects no stored tap references that
+        // are the tap's own, or were written under a name no stored tap has,
+        // are deleted (the same listing as above); any other reference is
+        // left in place.
         try {
             TapScriptGenerator.deleteTapScripts(
                 name,
@@ -2052,9 +2111,10 @@ class TapAPIController {
     }
 
     /** The script upload after key validation, over `io`'s store reads and
-      * writes. Rule S2 ([[TapAPIController.uploadTargetRefusal]]) is decided
-      * before anything is written; rules S4 and S5 are reported after the
-      * script was stored ([[TapAPIController.reportScriptStore]]). */
+      * writes. Rule S2 ([[TapAPIController.uploadTargetRefusal]]) and, for a
+      * limited caller, rule S4 ([[TapAPIController.notOwnUploadRefusal]]) are
+      * decided before anything is written; otherwise rules S4 and S5 are
+      * reported after the script was stored ([[TapAPIController.reportScriptStore]]). */
     private[datris] def storeScriptWith(
         body: java.util.Map[String, String],
         request: HttpServletRequest,
@@ -2095,6 +2155,9 @@ class TapAPIController {
             // Rule S2: a write with no repository reference of this tap behind
             // it never replaces the file another stored tap runs from.
             TapAPIController.uploadTargetRefusal(request, tapName, store, existing, io).foreach(return _)
+            // Rule S4 for a limited caller: a stored repository tap whose
+            // stored path is not its own file is not written through.
+            TapAPIController.notOwnUploadRefusal(request, tapName, store, existing, io).foreach(return _)
 
             // The editor sends the commit sha it opened against so a concurrent
             // external commit to the same file is a conflict, not an overwrite.

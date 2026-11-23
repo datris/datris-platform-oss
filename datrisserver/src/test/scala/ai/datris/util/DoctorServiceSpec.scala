@@ -1412,4 +1412,51 @@ class DoctorServiceSpec extends AnyFunSuite {
         // using a secret the owner may read stays a remedy
         assert(r.remediation.contains("use a tap secret the owner may read"), r.remediation)
     }
+    // Story: A tap's script upload and delete act only on that tap's own
+    // script file (plans/stories/tap-script-store-writes-and-deletes-in-scope.md),
+    // the not-own group of tap.references: its text says what happens now
+    // (a delete leaves the file; an upload by a user or key limited to a
+    // catalog or to what it created is refused) and what the next release
+    // changes, the detail says which refusal this release already makes, and
+    // the remedy records the earlier prefix or moves the script to built-in
+    // storage and back, never "store the script again" for such a tap.
+
+    private def referencesRow(findings: List[TapReferenceScan.Finding]): CheckResult = {
+        val p = new FakeProbes() {
+            override def tapReferenceScan(): TapReferenceScan.Result = TapReferenceScan.Result(findings, Nil)
+        }
+        val all = DoctorService.checks(p, slots, "1.62.0", Map.empty)
+        all.find(_.id == "tap.references").getOrElse(fail("no tap.references check in " + all.map(_.id))).run()
+    }
+
+    test("tap.references: the not-own group says a delete leaves the file, a limited upload is refused now, and what the next release changes") {
+        val text = TapReferencesCheck.Groups.toMap.apply(TapReferenceScan.NotOwnScript)
+        assert(text.contains("deleting such a tap now leaves the file in place"), text)
+        assert(text.contains("a script upload for it by a user or key limited to a catalog or to what it created is now refused"), text)
+        assert(text.contains("in the next release the tap's next script upload is stored at its own path"), text)
+        val r = referencesRow(List(TapReferenceScan.Finding(TapReferenceScan.NotOwnScript, "hand-placed-tap")))
+        assert(r.id == "tap.references" && r.status == "warn" && r.severity == "warn", r.toString)
+        assert(
+            r.detail == "1 finding(s) that the next release refuses or changes (in this release only a script upload by a user or key limited to a " +
+                "catalog or to what it created, for a tap whose script file is not its own, is refused): " + text + " (1): hand-placed-tap",
+            r.detail
+        )
+        assert(!r.namelessDetail.contains("hand-placed-tap"), r.namelessDetail)
+    }
+
+    test("tap.references: without a not-own finding the detail still says nothing is refused in this release") {
+        val r = referencesRow(List(TapReferenceScan.Finding(TapReferenceScan.OutsideArea, "outside-tap")))
+        assert(r.detail.startsWith("1 finding(s) that the next release refuses or changes (nothing is refused in this release): "), r.detail)
+    }
+
+    test("tap.references: the not-own remedy records the earlier prefix or moves the script to built-in storage and back") {
+        val r = referencesRow(List(TapReferenceScan.Finding(TapReferenceScan.NotOwnScript, "hand-placed-tap")))
+        val fix = r.remediation
+        val start = fix.indexOf("Script file not the tap's own:")
+        assert(start >= 0, fix)
+        val sentence = fix.substring(start, fix.indexOf("Script shared", start))
+        assert(sentence.contains("record that earlier prefix on the code repository settings (earlierPathPrefixes)"), sentence)
+        assert(sentence.contains("otherwise move the tap's script to built-in storage and back"), sentence)
+        assert(!sentence.contains("store the script again"), sentence)
+    }
 }
