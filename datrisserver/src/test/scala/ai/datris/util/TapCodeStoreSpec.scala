@@ -828,16 +828,21 @@ class TapCodeStoreSpec extends AnyFunSuite {
         "{\"type\": \"submodule\", \"submodule_git_url\": \"" + ResponseText + "\", \"sha\": \"" + ResponseText + "\"}",
         "{\"type\": 7, \"content\": \"cHJpbnQoMSk=\", \"sha\": \"" + ResponseText + "\"}",
         "{\"content\": {\"x\": \"" + ResponseText + "\"}, \"sha\": \"" + ResponseText + "\"}",
-        "{\"sha\": \"" + ResponseText + "\"}",
-        "\"" + ResponseText + "\"",
-        "null"
+        "{\"sha\": \"" + ResponseText + "\"}"
     )
 
-    /** Bodies that cannot be read as the expected JSON. */
+    /** Bodies that cannot be read as the expected JSON: not JSON, content
+      * that is not base64, JSON null (an empty body included) and a bare
+      * string, number or boolean. */
     private val Unreadable = Seq(
         "{\"content\": \"" + ResponseText,
         ResponseText + " <html>",
-        "{\"type\": \"file\", \"content\": \"" + ResponseText + "!!\", \"sha\": \"" + ResponseText + "\"}"
+        "{\"type\": \"file\", \"content\": \"" + ResponseText + "!!\", \"sha\": \"" + ResponseText + "\"}",
+        "null",
+        "",
+        "\"" + ResponseText + "\"",
+        "7",
+        "true"
     )
 
     test("a repository read whose response is not a single file is no such file, the same as a missing file") {
@@ -864,7 +869,7 @@ class TapCodeStoreSpec extends AnyFunSuite {
                 assert(e.getMessage == "Code repository read of 'taps/orders.py' failed (HTTP 200): the response could not be read.", e.getMessage)
                 assert(e.getCause == null)
             }
-        for (body <- Unreadable ++ NotAFile.filter(_ != "null")) {
+        for (body <- Unreadable ++ NotAFile) {
             withResponses((200, body), (200, body)) {
                 val calls: Seq[(String, () => Any)] = Seq(
                     "validation" -> (() => GithubClient.repoInfo(cfg)),
@@ -997,6 +1002,83 @@ class TapCodeStoreSpec extends AnyFunSuite {
             withResponses((500, ResponseText), (500, ResponseText)) {
                 val warning = store.deleteUnlessEdited(ref)
                 assert(warning.isDefined && !warning.get.contains(ResponseText), warning.toString)
+            }
+        }
+    }
+
+    // --- writes and deletes over a path that holds something other than a file
+
+    /** A transport recording (method, URL without query, request body): a
+      * branch lookup answers `HeadSha`, a contents read answers `read`, and
+      * every other request answers `other`. */
+    private class RecordingRepo(read: (Int, String), other: (Int, String) = (200, "{\"commit\": {\"sha\": \"" + Sha40 + "\"}}")) {
+        val sent = mutable.Buffer[(String, String, String)]()
+        def apply[T](f: => T): T = {
+            val saved = GithubClient.transport
+            GithubClient.transport = (request, _) =>
+                sent.synchronized {
+                    val body = request match {
+                        case e: org.apache.http.HttpEntityEnclosingRequest if e.getEntity != null =>
+                            org.apache.http.util.EntityUtils.toString(e.getEntity, java.nio.charset.StandardCharsets.UTF_8)
+                        case _ => null
+                    }
+                    val url = request.getURI.toString.takeWhile(_ != '?')
+                    sent += ((request.getMethod, url, body))
+                    if (request.getMethod == "GET" && url.contains("/branches/")) (200, "{\"commit\": {\"sha\": \"" + HeadSha + "\"}}")
+                    else if (request.getMethod == "GET") read
+                    else other
+                }
+            try f
+            finally GithubClient.transport = saved
+        }
+    }
+
+    private val HeadSha = "h" * 40
+
+    test("a write over a path holding something other than a file sends exactly one write, carrying no blob id") {
+        val cfg = repoCfg("taps/")
+        for (body <- NotAFile; base <- Seq(null, Sha40)) {
+            val repo = new RecordingRepo((200, body))
+            val commit = repo(GithubClient.putFile(cfg, "taps/orders.py", "print(1)", "m", base))
+            assert(commit == Sha40, body)
+            val writes = repo.sent.filter(_._1 != "GET")
+            assert(writes.map(_._1).toList == List("PUT"), body + ": " + repo.sent)
+            val payload = com.google.gson.JsonParser.parseString(writes.head._3).getAsJsonObject
+            assert(!payload.has("sha"), body + ": " + payload)
+            assert(repo.sent.map(_._1).toList == List("GET", "PUT"), body + ": " + repo.sent)
+        }
+    }
+
+    test("a write over a path holding something other than a file that is answered 409 or 422 is the conflict error, with nothing else sent") {
+        val cfg = repoCfg("taps/")
+        for (body <- NotAFile; status <- Seq(409, 422)) {
+            val repo = new RecordingRepo((200, body), (status, "{\"message\": \"" + ResponseText + "\"}"))
+            val e = intercept[CodeRepoConflictException](repo(GithubClient.putFile(cfg, "taps/orders.py", "print(1)", "m", null)))
+            assert(
+                e.getMessage == "'taps/orders.py' changed in the repository since this tap was loaded. Pull the latest script, reapply your edits, and save again.",
+                e.getMessage
+            )
+            assert(repo.sent.map(_._1).toList == List("GET", "PUT"), body + ": " + repo.sent)
+        }
+    }
+
+    test("a delete over a path holding something other than a file sends no delete, and the store answers as for a file already gone") {
+        val cfg = repoCfg("taps/")
+        val store = new GithubScriptStore(n => ScriptFamily.Tap(n), null, () => Some(cfg))
+        val ref = ScriptRef("orders", "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = Sha40)
+        withCacheDir { _ =>
+            val gone = new RecordingRepo((404, "{\"message\": \"Not Found\"}"))
+            val goneResult = gone(store.deleteUnlessEdited(ref))
+            assert(goneResult.isEmpty, goneResult.toString)
+            assert(!gone.sent.exists(_._1 == "DELETE"), gone.sent.toString)
+            for (body <- NotAFile) {
+                val client = new RecordingRepo((200, body))
+                client(GithubClient.deleteFile(cfg, "taps/orders.py", "m"))
+                assert(client.sent.map(_._1).toList == List("GET"), body + ": " + client.sent)
+                val repo = new RecordingRepo((200, body))
+                assert(repo(store.deleteUnlessEdited(ref)) == goneResult, body)
+                assert(!repo.sent.exists(_._1 == "DELETE"), body + ": " + repo.sent)
+                assert(repo.sent.map(_._1) == gone.sent.map(_._1), body + ": " + repo.sent)
             }
         }
     }

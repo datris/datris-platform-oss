@@ -220,10 +220,11 @@ object GithubClient {
     }
 
     /** Read a file at a ref (commit sha or branch). None if it doesn't exist
-      * at that ref, and None when the response is not a single file (a JSON
-      * array, or an object whose `type` is not `file` or that has no string
-      * `content` and `sha`). A body that is not JSON, or content that is not
-      * base64, is the fixed [[unreadable]] error. `commitShaForPin` is what
+      * at that ref, and None when the response is a JSON array or a JSON
+      * object that is not a single file (its `type` is not `file`, or it has
+      * no string `content` and `sha`). A body that is not JSON, JSON null
+      * (an empty body included), a bare string, number or boolean, or content
+      * that is not base64, is the fixed [[unreadable]] error. `commitShaForPin` is what
       * the caller records as the pin — pass the resolved head when reading a
       * branch. */
     def getFile(config: CodeRepoConfig, path: String, ref: String): Option[RepoFile] = {
@@ -234,8 +235,9 @@ object GithubClient {
         val element = read(status, context)(JsonParser.parseString(body))
         def stringField(o: JsonObject, name: String): Option[String] =
             Option(o.get(name)).filter(e => e.isJsonPrimitive && e.getAsJsonPrimitive.isString).map(_.getAsString)
+        if (!element.isJsonArray && !element.isJsonObject) throw unreadable(status, context)
         val file =
-            if (!element.isJsonObject) None
+            if (element.isJsonArray) None
             else {
                 val json = element.getAsJsonObject
                 val isFile = Option(json.get("type")).forall(t => t.isJsonPrimitive && t.getAsJsonPrimitive.isString && t.getAsString == "file")

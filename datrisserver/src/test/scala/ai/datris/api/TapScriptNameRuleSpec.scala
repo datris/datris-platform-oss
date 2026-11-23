@@ -30,7 +30,9 @@ import scala.collection.mutable
 /** One tap-name rule on every path that stores a tap script: the generate,
   * fix, review and optimize routes answer a tap name whose script key would
   * have an empty, `.` or `..` segment with the same `400` and message as
-  * `POST /tap/script` ([[ScriptPaths.tapNameRefusal]]), and store nothing.
+  * `POST /tap/script` ([[ScriptPaths.tapNameRefusal]]), before the model step
+  * is called, and store nothing. On review and optimize the answer is the
+  * same whether or not the model would change the script.
   * Ordinary names are stored under `tap-scripts/<name>_<id>.py` as before.
   *
   * The routes run through their [[TapAPIController.TapAiIO]] seam; each fake
@@ -61,13 +63,18 @@ class TapScriptNameRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
         l
     }
 
-    /** The object store writes, and the four model steps ending in the store write. */
-    private class World {
+    /** The object store writes, and the four model steps ending in the store
+      * write. With `changes = false` the review and optimize steps leave the
+      * script as it was and store nothing, as the production ones do. */
+    private class World(changes: Boolean = true) {
         val writes: mutable.Buffer[String] = mutable.Buffer.empty
+        val modelCalls: mutable.Buffer[String] = mutable.Buffer.empty
         val objects: ObjectStoreUtility = mock(classOf[ObjectStoreUtility])
         doAnswer { i => writes += i.getArgument[String](1); null }.when(objects).writeBucketObject(anyString(), anyString(), anyString())
 
         private def store(name: String, old: String): String = TapScriptGenerator.storeScript(name, NewScript, old, objects = objects)
+
+        private def model(route: String): Unit = modelCalls += route
 
         val io: TapAPIController.TapAiIO = TapAPIController.TapAiIO(
             readTap = _ => null,
@@ -76,10 +83,20 @@ class TapScriptNameRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
             writeVersioned = (t, _, _) => t,
             secretType = _ => Some(Some(SecretNames.TapScopeTap)),
             secretOwner = _ => None,
-            generate = (_, n, old, _, _) => TapGenerateResult(NewScript, jl(), store(n, old), jl(), "anthropic", "claude-opus-5-5"),
-            fix = (n, _, _, _, _, old, _) => TapFixResult(NewScript, jl(), store(Option(n).getOrElse("tap"), old)),
-            review = (n, _, _, _, _, old, _) => TapReviewResult(NewScript, jl(), store(n, old), jl("handle HTTP 429"), rewritten = true),
-            optimize = (n, _, _, _, _, old, _) => TapOptimizeResult(NewScript, jl(), store(n, old), jl("batch the requests"))
+            generate = (_, n, old, _, _) => {
+                model("generate"); TapGenerateResult(NewScript, jl(), store(n, old), jl(), "anthropic", "claude-opus-5-5")
+            },
+            fix = (n, _, _, _, _, old, _) => { model("fix"); TapFixResult(NewScript, jl(), store(Option(n).getOrElse("tap"), old)) },
+            review = (n, _, _, _, _, old, _) => {
+                model("review")
+                if (changes) TapReviewResult(NewScript, jl(), store(n, old), jl("handle HTTP 429"), rewritten = true)
+                else TapReviewResult(OldScript, jl(), old, jl(), rewritten = false)
+            },
+            optimize = (n, _, _, _, _, old, _) => {
+                model("optimize")
+                if (changes) TapOptimizeResult(NewScript, jl(), store(n, old), jl("batch the requests"))
+                else TapOptimizeResult(OldScript, jl(), old, jl())
+            }
         )
     }
 
@@ -143,6 +160,16 @@ class TapScriptNameRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
             }
         }
 
+        test(route + ": a refused tap name never reaches the model step, and nothing is written") {
+            for (name <- Refused) {
+                val w = new World
+                val r = call(route, name, w)
+                assert(r.getStatusCode.value == 400, route + " " + name + ": " + r.getStatusCode + " " + r.getBody)
+                assert(w.modelCalls.isEmpty, route + " " + name + ": " + w.modelCalls)
+                assert(w.writes.isEmpty, route + " " + name + ": " + w.writes)
+            }
+        }
+
         test(route + ": an ordinary tap name is stored under tap-scripts/<name>_<id>.py and answered 200 as before") {
             for (name <- Accepted) {
                 val w = new World
@@ -152,6 +179,27 @@ class TapScriptNameRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
                 assert(path.matches(java.util.regex.Pattern.quote("tap-scripts/" + name + "_") + "[0-9a-f]{8}\\.py"), path)
                 assert(w.writes.toList == List(path), route + " " + name + ": " + w.writes)
             }
+        }
+    }
+
+    for (route <- Seq("review", "optimize"))
+        test(route + ": a refused tap name is a 400 whether or not the model would change the script") {
+            for (name <- Refused; changes <- Seq(true, false)) {
+                val w = new World(changes)
+                val r = call(route, name, w)
+                assert(r.getStatusCode.value == 400, route + " " + name + " changes=" + changes + ": " + r.getStatusCode + " " + r.getBody)
+                assert(r.getBody == ApiErrors.errorBody(ScriptPaths.tapNameRefusal(name).get))
+                assert(w.modelCalls.isEmpty && w.writes.isEmpty, route + " " + name + " changes=" + changes)
+            }
+        }
+
+    test("review and optimize: an ordinary tap name whose script the model leaves unchanged is answered 200 with nothing stored") {
+        for (route <- Seq("review", "optimize"); name <- Accepted) {
+            val w = new World(changes = false)
+            val r = call(route, name, w)
+            assert(r.getStatusCode.value == 200, route + " " + name + ": " + r.getBody)
+            assert(w.modelCalls.toList == List(route))
+            assert(w.writes.isEmpty, route + " " + name + ": " + w.writes)
         }
     }
 

@@ -2037,7 +2037,10 @@ class TapAPIController {
       * model call through `io`. A request naming no tap (missing or blank
       * `tapName`) reads and writes no stored tap and is not reported; the
       * model still gets the name a missing one stands for (`fallbackName`,
-      * `tap-<millis>` made here when not given). */
+      * `tap-<millis>` made here when not given). A named tap whose script
+      * path would have an empty, `.` or `..` segment
+      * ([[ScriptPaths.tapNameRefusal]]) is a `400`, before any model or store
+      * call. */
     private[api] def generateScriptWith(
         body: java.util.Map[String, String],
         request: HttpServletRequest,
@@ -2053,6 +2056,8 @@ class TapAPIController {
             val tapType = Option(body.get("tapType")).getOrElse("structured")
             // Generating for an existing tap repoints it: same visibility as an update.
             if (named) TapAPIController.restrictedRefusalIfExists(request, tapName, "update", io.readTap).foreach(return _)
+            // The tap-name rule of `POST /tap/script`, before any model or store call.
+            if (named) ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             if (description == null || description.isEmpty)
                 throw new DatrisException("Description is required")
@@ -2174,7 +2179,10 @@ class TapAPIController {
     }
 
     /** `POST /tap/fix` after key validation, every store and model call
-      * through `io`. A request naming no tap reads and writes no stored tap. */
+      * through `io`. A request naming no tap reads and writes no stored tap.
+      * A named tap whose script path would have an empty, `.` or `..` segment
+      * ([[ScriptPaths.tapNameRefusal]]) is a `400`, before any model or store
+      * call. */
     private[api] def fixScriptWith(
         body: java.util.Map[String, String],
         request: HttpServletRequest,
@@ -2192,6 +2200,8 @@ class TapAPIController {
             val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
             // Fixing an existing tap repoints it: same visibility as an update.
             if (named) TapAPIController.restrictedRefusalIfExists(request, tapName, "update", io.readTap).foreach(return _)
+            // The tap-name rule of `POST /tap/script`, before any model or store call.
+            if (named) ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             if (script == null || script.isEmpty)
                 throw new DatrisException("Script is required")
@@ -2254,7 +2264,10 @@ class TapAPIController {
     /** `POST /tap/review` after key validation, every store and model call
       * through `io`. A request naming no tap reads and writes no stored tap;
       * the model still gets the name `tap` a missing one stands for. Report
-      * only (rule 4): a review by an identity holding no `tap:update`. */
+      * only (rule 4): a review by an identity holding no `tap:update`. A
+      * named tap whose script path would have an empty, `.` or `..` segment
+      * ([[ScriptPaths.tapNameRefusal]]) is a `400`, before any model or store
+      * call, whether or not the model would change the script. */
     private[api] def reviewScriptWith(
         body: java.util.Map[String, Object],
         request: HttpServletRequest,
@@ -2272,6 +2285,8 @@ class TapAPIController {
             val priorIterationsJson = Option(body.get("priorIterations")).map(_.toString).getOrElse("[]")
             val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
             if (named) TapAPIController.restrictedRefusalIfExists(request, tapName, "update", io.readTap).foreach(return _)
+            // The tap-name rule of `POST /tap/script`, before any model or store call.
+            if (named) ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
@@ -2338,7 +2353,10 @@ class TapAPIController {
 
     /** `POST /tap/optimize` after key validation, every store and model call
       * through `io`. A request naming no tap reads and writes no stored tap;
-      * the model still gets the name `tap` a missing one stands for. */
+      * the model still gets the name `tap` a missing one stands for. A named
+      * tap whose script path would have an empty, `.` or `..` segment
+      * ([[ScriptPaths.tapNameRefusal]]) is a `400`, before any model or store
+      * call, whether or not the model would change the script. */
     private[api] def optimizeScriptWith(
         body: java.util.Map[String, Object],
         request: HttpServletRequest,
@@ -2356,6 +2374,8 @@ class TapAPIController {
             val priorIterationsJson = Option(body.get("priorIterations")).map(_.toString).getOrElse("[]")
             val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
             if (named) TapAPIController.restrictedRefusalIfExists(request, tapName, "update", io.readTap).foreach(return _)
+            // The tap-name rule of `POST /tap/script`, before any model or store call.
+            if (named) ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
