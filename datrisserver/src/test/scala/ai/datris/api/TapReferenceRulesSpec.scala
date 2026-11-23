@@ -1198,4 +1198,32 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
         } finally ScopeDenialFixtures.install(env)
         assert(rowsFor(n).size == 2, rowsFor(n).toString)
     }
+
+    // ================================================================ story: tap-script-store-writes-and-deletes-in-scope, rule S3
+    // The pipelines folder name itself, with no separator after it, names a
+    // folder and never a tap script: it is outside the tap script area. A
+    // file whose name only starts with the pipelines word stays inside.
+
+    test("S3: the pipelines folder name with no separator after it is outside the tap script area; a file named like it stays inside") {
+        for (prefix <- Seq(RepoPrefix, "") ++ oddPrefixes) {
+            val pre = TapReferenceRules.normalizePrefix(prefix)
+            assert(!TapReferenceRules.repoInArea(pre + "pipelines", pre), "'" + prefix + "'")
+            for (inside <- Seq("pipelines-x.py", "pipelines.py", "pipelines_x.py", "pipelinesx"))
+                assert(TapReferenceRules.repoInArea(pre + inside, pre), "'" + prefix + "' " + inside)
+        }
+    }
+
+    test("S3: a limited caller's new reference to the pipelines folder name is refused at save and test, reported at restore") {
+        for (rk <- limited; site <- Sites3)
+            assert(rule3At(site, judge(rk, site, newRepoTap("new-tap", RepoPrefix + "pipelines"), null)), rk.label + " " + site)
+        for (rk <- limited) {
+            val store = new Store()
+            val out = save(rk, store, newRepoTap("new-tap", RepoPrefix + "pipelines"))
+            assert(out.isLeft, rk.label + ": " + out)
+            assertRefusal(rk, "new-tap", out.left.get, hiddenNamesFor(rk))
+            store.nothingDone()
+            val ok = new Store()
+            assert(save(rk, ok, newRepoTap("pipelines-x", RepoPrefix + "pipelines-x.py")).isRight, rk.label)
+        }
+    }
 }

@@ -438,4 +438,91 @@ class TapReferenceScanSpec extends AnyFunSuite with BeforeAndAfterEach {
             assert(audit.synchronized(audit.toList).count(_.resourceName.contains(n)) == 2)
         } finally TapOwnerScopeReport.today = savedToday
     }
+
+    // ================================================================ story: tap-script-store-writes-and-deletes-in-scope
+    //
+    // Names the implementation must provide:
+    // {{{
+    // object TapReferenceScan {
+    //   /** A tap stored in a code repository whose stored path is not its own file
+    //     * (<prefix><tap>.py for the current or a recorded earlier prefix). */
+    //   val NotOwnScript = "notOwnScript"
+    //   def scan(taps, resolveOwner, secretOwner, reviewKeys,
+    //            repoPathPrefix: () => String = () => "",
+    //            repoEarlierPrefixes: () => Seq[String] = () => Nil): Result
+    // }
+    // object DoctorService.TapReferencesCheck { val Groups: Seq[(String, String)] }   // gains NotOwnScript
+    // }}}
+
+    private def scanRepo(taps: List[TapConfig], earlier: Seq[String] = Nil): TapReferenceScan.Result =
+        TapReferenceScan.scan(taps, resolve, n => secretOwners.get(n), Nil, () => "datris-taps/", () => earlier)
+
+    test("scan: a repository tap whose stored path is not its own file is listed under notOwnScript; one at its own path is not") {
+        val r = scanRepo(
+            List(
+                repoTap("own", "datris-taps/own.py"),
+                repoTap("own-respelled", "datris-taps//own-respelled.py"),
+                repoTap("hand-placed", "datris-taps/lib/shared.py"),
+                repoTap("copy-of-own", "datris-taps/own.py"),
+                repoTap("old-prefix", "old-taps/old-prefix.py"),
+                repoTap("pipeline-file", "datris-taps/pipelines/p/transformation.py")
+            )
+        )
+        assert(names(r, TapReferenceScan.NotOwnScript) == List("hand-placed", "copy-of-own", "old-prefix", "pipeline-file"), r.toString)
+        assert(r.unreadable.isEmpty, r.toString)
+    }
+
+    test("scan: a repository tap under a recorded earlier prefix is not listed under notOwnScript, exactly as one under the current prefix") {
+        val taps = List(repoTap("old-prefix", "old-taps/old-prefix.py"), repoTap("own", "datris-taps/own.py"))
+        assert(names(scanRepo(taps, Seq("old-taps/")), TapReferenceScan.NotOwnScript).isEmpty)
+        assert(names(scanRepo(taps, Seq("old-taps")), TapReferenceScan.NotOwnScript).isEmpty, "recorded without its trailing separator")
+        assert(names(scanRepo(taps), TapReferenceScan.NotOwnScript) == List("old-prefix"))
+    }
+
+    test("scan: the pipelines folder name with no separator after it is outside the area; a file named like it is not") {
+        val r = scanRepo(List(repoTap("folder-ref", "datris-taps/pipelines"), repoTap("pipelines-x", "datris-taps/pipelines-x.py")))
+        assert(names(r, TapReferenceScan.OutsideArea) == List("folder-ref"), r.toString)
+    }
+
+    test("scan: when the repository settings cannot be read, repository taps are listed as unreadable, never as nothing to report") {
+        val r = TapReferenceScan.scan(
+            List(repoTap("hand-placed", "datris-taps/lib/shared.py")),
+            resolve,
+            n => secretOwners.get(n),
+            Nil,
+            () => "datris-taps/",
+            () => throw new IllegalStateException("mongo down")
+        )
+        assert(r.unreadable == List("hand-placed") || names(r, TapReferenceScan.NotOwnScript) == List("hand-placed"), r.toString)
+        val r2 = TapReferenceScan.scan(
+            List(repoTap("hand-placed", "datris-taps/lib/shared.py")),
+            resolve,
+            n => secretOwners.get(n),
+            Nil,
+            () => throw new IllegalStateException("mongo down"),
+            () => Nil
+        )
+        assert(r2.unreadable == List("hand-placed"), r2.toString)
+    }
+
+    test("tap.references lists taps whose script file is not their own and says what changes: deleting leaves the file, the remedy is the earlier prefix") {
+        assert(DoctorService.TapReferencesCheck.Groups.map(_._1).contains(TapReferenceScan.NotOwnScript))
+        val in = TapReferenceScan.Result(List(TapReferenceScan.Finding(TapReferenceScan.NotOwnScript, "hand-placed-tap")), Nil)
+        val r = referencesCheck(probes(in)).run()
+        assert(r.status == "warn" && r.severity == "warn", r.toString)
+        assert(r.detail.contains("hand-placed-tap"), r.detail)
+        val label = DoctorService.TapReferencesCheck.Groups.find(_._1 == TapReferenceScan.NotOwnScript).get._2.toLowerCase
+        assert(label.contains("delet") && label.contains("left"), "says a delete leaves the file in place: " + label)
+        assert(label.contains("own"), label)
+        assert(r.remediation.toLowerCase.contains("earlier"), "names recording the earlier prefix as a remedy: " + r.remediation)
+        assert(!r.namelessDetail.contains("hand-placed-tap"), r.namelessDetail)
+    }
+
+    test("tap.references never errors with taps whose script file is not their own") {
+        val many = (1 to 300).toList.map(i => TapReferenceScan.Finding(TapReferenceScan.NotOwnScript, "t" + i))
+        for (in <- Seq(TapReferenceScan.Result(many, Nil), TapReferenceScan.Result(many.take(1), List("t-flaky")))) {
+            val r = DoctorService.runOne(referencesCheck(probes(in)))
+            assert(r.status == "warn" && r.severity != "error", r.toString)
+        }
+    }
 }
