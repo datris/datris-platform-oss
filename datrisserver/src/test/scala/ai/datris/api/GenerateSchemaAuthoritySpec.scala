@@ -1,0 +1,363 @@
+package ai.datris.api
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+ */
+
+import ai.datris.audit.{AuditEntry, AuditLog}
+import ai.datris.config.TenantInterceptor
+import ai.datris.model._
+import ai.datris.util.{APIKeyValidator, AiSampleValues, InMemoryUserDb}
+import ai.datris.util.InMemoryUserDb.grants
+import com.google.gson.{Gson, JsonParser}
+import jakarta.servlet.http.HttpServletRequest
+import org.mockito.Mockito.{mock, when}
+import org.scalatest.BeforeAndAfterEach
+import org.scalatest.funsuite.AnyFunSuite
+import org.springframework.http.ResponseEntity
+
+import scala.collection.mutable
+
+/** Story: Generating a validation schema needs the right to author pipelines
+  * and never replaces a schema another pipeline depends on
+  * (plans/stories/generate-schema-write-authority.md). Owner decisions D2 (a):
+  * a stored schema that pipelines use is replaced only when the caller may
+  * update every one of them; D3: the refusal names no pipeline, for every
+  * caller. The route's capability (D1) is pinned in
+  * GenerateSchemaRouteAuthoritySpec.
+  *
+  * The handler reads the object store, the pipeline configs and the model, so
+  * it gets a seam the Spring method delegates to (the same style as
+  * `CatalogEnableJob.Deps`); the live implementation uses
+  * `ObjectStoreUtil`, `PipelineConfigIO.readAll` and
+  * `AISchemaUtil.generateJsonSchema` / `generateXsdSchema`:
+  * {{{
+  * object ConfigAPIController {
+  *   trait GenerateSchemaDeps {
+  *     /** True when an object is stored at exactly bucket/key (not a prefix
+  *       * match). Throws when the store cannot be read. */
+  *     def exists(bucket: String, key: String): Boolean
+  *     /** Every stored pipeline config. Throws when they cannot be read. */
+  *     def pipelines(): Seq[PipelineConfig]
+  *     /** The model call; schemaType is "json-schema" or "xsd". */
+  *     def generate(schemaType: String, sampleData: String): String
+  *     def write(bucket: String, key: String, bytes: Array[Byte]): Unit
+  *   }
+  *   /** POST /config/generate-schema after the key check: the request
+  *     * checks of parseGenerateSchema (400, unchanged), then the in-use rule,
+  *     * then the model and the write. A failed exists or pipelines read is a
+  *     * 500 with nothing generated or written. */
+  *   def generateSchemaWith(request: HttpServletRequest, body: String, deps: GenerateSchemaDeps): ResponseEntity[String]
+  *   /** Pure: Some(409 {"error": "A validation schema named '<file>' is
+  *     * already in use. Choose another schema name."}) when `exists` and some
+  *     * pipeline of `referencing` fails `mayUpdate`; None otherwise. */
+  *   def schemaOverwriteRefusal(file: String, exists: Boolean, referencing: Seq[PipelineConfig],
+  *                              mayUpdate: PipelineConfig => Boolean): Option[ResponseEntity[String]]
+  * }
+  * }}}
+  * A pipeline uses the object when its `dataQuality.validationSchema`
+  * resolves to it exactly as `DataQuality` and `SchemaValidationUtil` resolve
+  * it at run time (`s3://` URL as given, else
+  * `s3://<env>-config/validation-schema/<value>`, then bucket and key through
+  * the URI). Object keys are case-sensitive in the shipped store (MinIO on a
+  * named volume), so a name differing only in case is another object.
+  * "May update" is the stored-item rule: the identity grants
+  * `pipeline:update` on the pipeline's catalog and owner (no identity: yes). */
+class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
+
+    import ConfigAPIController.{generateSchemaWith, schemaOverwriteRefusal, GenerateSchemaDeps}
+
+    private var savedEnv: DatrisEnvironment = _
+    private val captured = mutable.ArrayBuffer[AuditEntry]()
+
+    override def beforeEach(): Unit = {
+        savedEnv = DatrisEnvironment.values
+        val e = InMemoryUserDb.env(useAuditLog = true)
+        DatrisEnvironment.init(e)
+        TenantContext.set(e)
+        captured.clear()
+        AuditLog.sinkOverride = (a: AuditEntry) => captured.synchronized { captured += a; () }
+    }
+
+    override def afterEach(): Unit = {
+        AuditLog.sinkOverride = null
+        UserContext.clear()
+        TenantContext.clear()
+        DatrisEnvironment.values = savedEnv
+    }
+
+    // ------------------------------------------------------------ fakes
+
+    private val Bucket = "test-config"
+    private val GeneratedSchema = """{"$schema":"http://json-schema.org/draft-04/schema#","type":"array"}"""
+    private val GeneratedXsd = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"/>"""
+
+    private class FakeDeps(
+        stored: Set[String] = Set.empty,
+        configs: Seq[PipelineConfig] = Nil,
+        existsFails: Boolean = false,
+        pipelinesFail: Boolean = false
+    ) extends GenerateSchemaDeps {
+        val generated = mutable.ArrayBuffer[(String, String)]()
+        val written = mutable.ArrayBuffer[(String, String, String)]()
+        override def exists(bucket: String, key: String): Boolean = {
+            if (existsFails) throw new RuntimeException("object store unavailable")
+            bucket == Bucket && stored.contains(key)
+        }
+        override def pipelines(): Seq[PipelineConfig] = {
+            if (pipelinesFail) throw new RuntimeException("pipeline configs unavailable")
+            configs
+        }
+        override def generate(schemaType: String, sampleData: String): String = {
+            generated += (schemaType -> sampleData)
+            if (schemaType == "xsd") GeneratedXsd else GeneratedSchema
+        }
+        override def write(bucket: String, key: String, bytes: Array[Byte]): Unit =
+            written += ((bucket, key, new String(bytes, "UTF-8")))
+        def untouched: Boolean = generated.isEmpty && written.isEmpty
+    }
+
+    private def req(rk: ResolvedKey): HttpServletRequest = {
+        val r = mock(classOf[HttpServletRequest])
+        when(r.getMethod).thenReturn("POST")
+        when(r.getRequestURI).thenReturn("/api/v1/config/generate-schema")
+        when(r.getRemoteAddr).thenReturn("127.0.0.1")
+        when(r.getAttribute(TenantInterceptor.ResolvedKeyAttr)).thenAnswer(_ => rk)
+        r
+    }
+
+    private def session(u: User): ResolvedKey = APIKeyValidator.resolveFromSession(u)
+    private val admin = req(session(User("root", "h", User.RoleAdmin, null, null, null)))
+    private val editor = req(session(User("ed", "h", User.RoleEditor, null, null, null)))
+    private val keysOff = req(ResolvedKey(None, "anonymous", Seq(Capability.FullAccess), isLegacyFullAccess = true))
+    private val noIdentity = req(null)
+
+    /** Edit in Marketing, view in Sales, nothing in HR. */
+    private val bob = req(
+        session(
+            User("bob", "h", User.RoleEditor, null, null, null, restricted = true, catalogGrants = grants("Marketing" -> "edit", "Sales" -> "view"))
+        )
+    )
+    private def key(label: String, caps: String*): HttpServletRequest =
+        req(ResolvedKey(None, label, Capability.parseList(caps), isLegacyFullAccess = false))
+    private val marketingKey = key("mkt-builder", "pipeline:read:catalog=Marketing", "pipeline:create:catalog=Marketing", "pipeline:update:catalog=Marketing")
+    private val ownKey = key("own-builder", "pipeline:read:owner=self", "pipeline:create", "pipeline:update:owner=self")
+    private val authorKey = key("author", "pipeline:read", "pipeline:create", "pipeline:update")
+
+    private def pipe(name: String, catalog: String, schema: String, owner: String = "someone"): PipelineConfig =
+        PipelineConfig(name = name, catalog = catalog, createdByKeyLabel = owner, dataQuality = DataQuality(validationSchema = schema))
+
+    private val mktOrders = pipe("mkt_orders", "Marketing", "orders.json", owner = "mkt-builder")
+    private val salesOrders = pipe("sales_orders", "Sales", "orders.json")
+    private val hrPayroll = pipe("hr_payroll_feed", "HR", "orders.json")
+    private val ownOrders = pipe("own_orders", "Any", "orders.json", owner = "own-builder")
+    private val unrelated = pipe("other_feed", "HR", "other.json")
+
+    private val Stored = Set("validation-schema/orders.json", "validation-schema/other.json")
+    private val InUse = "A validation schema named 'orders.json' is already in use. Choose another schema name."
+
+    private def body(name: String = "orders", schemaType: String = "json-schema", sample: String = """[{"id":1}]"""): String = {
+        val o = new com.google.gson.JsonObject
+        o.addProperty("type", schemaType)
+        o.addProperty("name", name)
+        o.addProperty("sampleData", sample)
+        o.toString
+    }
+
+    /** The response today's handler builds for a generated file. */
+    private def todaysResponse(filename: String, schema: String): String = {
+        val m = new java.util.LinkedHashMap[String, Any]()
+        m.put("filename", filename)
+        m.put("path", "s3://" + Bucket + "/validation-schema/" + filename)
+        m.put("schema", schema)
+        if (!AiSampleValues.enabled) m.put("valuesWithheld", true)
+        new Gson().toJson(m)
+    }
+
+    private def status(r: ResponseEntity[String]): Int = r.getStatusCode.value
+    private def error(r: ResponseEntity[String]): String = JsonParser.parseString(r.getBody).getAsJsonObject.get("error").getAsString
+
+    private def assertAllowed(r: ResponseEntity[String], d: FakeDeps, file: String = "orders.json", schemaType: String = "json-schema"): Unit = {
+        assert(status(r) == 200, r.getBody)
+        val schema = if (schemaType == "xsd") GeneratedXsd else GeneratedSchema
+        assert(r.getBody == todaysResponse(file, schema), r.getBody)
+        assert(d.generated.toList == List(schemaType -> """[{"id":1}]"""))
+        assert(d.written.toList == List((Bucket, "validation-schema/" + file, schema)))
+    }
+
+    private def assertInUse(r: ResponseEntity[String], d: FakeDeps, hidden: Seq[String] = Nil): Unit = {
+        assert(status(r) == 409, s"${status(r)} ${r.getBody}")
+        assert(error(r) == InUse, r.getBody)
+        assert(d.untouched, s"refused, yet generated ${d.generated} and wrote ${d.written}")
+        (hidden ++ Seq("hr_payroll_feed", "sales_orders", "mkt_orders", "own_orders", "HR", "Sales", "Marketing")).foreach { n =>
+            assert(!r.getBody.contains(n), s"the refusal names '$n': ${r.getBody}")
+        }
+    }
+
+    // ------------------------------------------------------------ Acceptance 1: who may overwrite
+
+    test("an editor generating under a new name gets 200 and the object is written exactly as before") {
+        val d = new FakeDeps(stored = Stored, configs = Seq(salesOrders, hrPayroll))
+        assertAllowed(generateSchemaWith(editor, body("fresh_feed"), d), d, file = "fresh_feed.json")
+        val x = new FakeDeps(stored = Stored, configs = Seq(salesOrders))
+        assertAllowed(generateSchemaWith(editor, body("fresh_feed", "xsd"), x), x, file = "fresh_feed.xsd", schemaType = "xsd")
+    }
+
+    test("generating over an existing schema that no pipeline uses gets 200") {
+        for (r <- Seq(editor, bob, marketingKey, ownKey, authorKey)) {
+            val d = new FakeDeps(stored = Stored, configs = Seq(unrelated))
+            assertAllowed(generateSchemaWith(r, body(), d), d)
+        }
+    }
+
+    test("generating over a schema used only by pipelines the caller may update gets 200") {
+        val cases = Seq(
+            "restricted session, edit grant" -> (bob, Seq(mktOrders)),
+            "catalog key" -> (marketingKey, Seq(mktOrders)),
+            "key limited to what it created" -> (ownKey, Seq(ownOrders)),
+            "unscoped authoring key" -> (authorKey, Seq(salesOrders, hrPayroll)),
+            "editor" -> (editor, Seq(salesOrders, hrPayroll, mktOrders)),
+            "admin" -> (admin, Seq(salesOrders, hrPayroll)),
+            "keys-off" -> (keysOff, Seq(salesOrders, hrPayroll)),
+            "no identity" -> (noIdentity, Seq(salesOrders, hrPayroll))
+        )
+        cases.foreach { case (what, (r, used)) =>
+            val d = new FakeDeps(stored = Stored, configs = used :+ unrelated)
+            withClue(what + ": ") { assertAllowed(generateSchemaWith(r, body(), d), d) }
+        }
+    }
+
+    test("a restricted session cannot replace a schema used by a pipeline in another catalog: 409, no model call, object unchanged") {
+        // Visible but not editable (Sales: view).
+        val visible = new FakeDeps(stored = Stored, configs = Seq(mktOrders, salesOrders))
+        val rVisible = generateSchemaWith(bob, body(), visible)
+        assertInUse(rVisible, visible)
+        // Not visible at all (HR: no grant): the same answer, word for word.
+        val hidden = new FakeDeps(stored = Stored, configs = Seq(mktOrders, hrPayroll))
+        val rHidden = generateSchemaWith(bob, body(), hidden)
+        assertInUse(rHidden, hidden)
+        assert(rHidden.getBody == rVisible.getBody)
+        // An uncataloged pipeline is outside every grant.
+        val blank = new FakeDeps(stored = Stored, configs = Seq(pipe("loose_feed", null, "orders.json")))
+        assertInUse(generateSchemaWith(bob, body(), blank), blank, hidden = Seq("loose_feed"))
+    }
+
+    test("a catalog-limited key cannot replace a schema used by a pipeline outside its catalog: 409, no model call, object unchanged") {
+        val d = new FakeDeps(stored = Stored, configs = Seq(mktOrders, hrPayroll))
+        val r = generateSchemaWith(marketingKey, body(), d)
+        assertInUse(r, d)
+        // Same text as the restricted session gets (D3: for every caller).
+        val viaBob = new FakeDeps(stored = Stored, configs = Seq(hrPayroll))
+        assert(generateSchemaWith(bob, body(), viaBob).getBody == r.getBody)
+    }
+
+    test("a key limited to what it created cannot replace a schema someone else's pipeline uses") {
+        val d = new FakeDeps(stored = Stored, configs = Seq(ownOrders, salesOrders))
+        assertInUse(generateSchemaWith(ownKey, body(), d), d)
+    }
+
+    // ------------------------------------------------------------ same object, other spelling
+
+    test("a request name in path form is the stored object it reduces to") {
+        Seq("sub/orders", "../orders", "  orders  ").foreach { n =>
+            val d = new FakeDeps(stored = Stored, configs = Seq(hrPayroll))
+            withClue(n + ": ") { assertInUse(generateSchemaWith(marketingKey, body(n), d), d) }
+        }
+    }
+
+    test("a pipeline naming the same object by s3 URL or encoded name counts as using it") {
+        Seq(
+            "s3://test-config/validation-schema/orders.json",
+            "s3://test-config/validation-schema/orders%2Ejson",
+            "orders%2Ejson"
+        ).foreach { v =>
+            val d = new FakeDeps(stored = Stored, configs = Seq(pipe("hr_payroll_feed", "HR", v)))
+            withClue(v + ": ") { assertInUse(generateSchemaWith(marketingKey, body(), d), d) }
+        }
+    }
+
+    test("a pipeline naming a different object does not block the name") {
+        Seq(
+            "Orders.json", // keys are case-sensitive: another object
+            "orders.xsd", // generating json-schema writes orders.json
+            "s3://other-config/validation-schema/orders.json",
+            "s3://test-config/validation-schema/archive/orders.json",
+            "validation-schema/orders.json" // resolves under validation-schema/validation-schema/
+        ).foreach { v =>
+            val d = new FakeDeps(
+                stored = Stored ++ Set("validation-schema/Orders.json", "validation-schema/orders.xsd"),
+                configs = Seq(pipe("hr_payroll_feed", "HR", v))
+            )
+            withClue(v + ": ") { assertAllowed(generateSchemaWith(marketingKey, body(), d), d) }
+        }
+        // A name whose generated file differs from the stored one.
+        val d = new FakeDeps(stored = Stored, configs = Seq(hrPayroll))
+        assertAllowed(generateSchemaWith(marketingKey, body("orders.json"), d), d, file = "orders.json.json")
+        // Case variant of the request name: Orders.json is not orders.json.
+        val c = new FakeDeps(stored = Stored, configs = Seq(hrPayroll))
+        assertAllowed(generateSchemaWith(marketingKey, body("Orders"), c), c, file = "Orders.json")
+    }
+
+    test("an xsd name is checked against the .xsd object") {
+        val d = new FakeDeps(stored = Set("validation-schema/orders.xsd"), configs = Seq(pipe("hr_payroll_feed", "HR", "orders.xsd")))
+        val r = generateSchemaWith(marketingKey, body(schemaType = "xsd"), d)
+        assert(status(r) == 409, r.getBody)
+        assert(error(r) == "A validation schema named 'orders.xsd' is already in use. Choose another schema name.")
+        assert(d.untouched)
+    }
+
+    // ------------------------------------------------------------ failures and order
+
+    test("a failed existence or pipeline read is a 500 with nothing generated or written") {
+        val e = new FakeDeps(stored = Stored, configs = Seq(hrPayroll), existsFails = true)
+        val r1 = generateSchemaWith(editor, body(), e)
+        assert(status(r1) == 500, r1.getBody)
+        assert(e.untouched)
+        val p = new FakeDeps(stored = Stored, configs = Seq(hrPayroll), pipelinesFail = true)
+        val r2 = generateSchemaWith(editor, body(), p)
+        assert(status(r2) == 500, r2.getBody)
+        assert(p.untouched)
+    }
+
+    test("input errors keep their 400 text, come before the in-use rule and the model, and say nothing about use") {
+        val bad = Seq(
+            "" -> "Request body must be a JSON object with string fields: type, name, sampleData",
+            "{not json" -> "Request body is not valid JSON",
+            "{}" -> "Missing required field(s): type, name, sampleData",
+            body(sample = "   ") -> "Sample data is required",
+            body(name = " ") -> "Schema name is required",
+            body(schemaType = "avro") -> "Invalid schema type: avro. Must be one of: json-schema, xsd",
+            body(name = "a b!") -> "File name 'a b!' contains invalid characters. Allowed: letters, digits, . _ -"
+        )
+        bad.foreach { case (b, msg) =>
+            // The name is in use by a pipeline the caller may not update ...
+            val used = new FakeDeps(stored = Stored, configs = Seq(hrPayroll))
+            val r = generateSchemaWith(marketingKey, b, used)
+            assert(status(r) == 400, s"$b -> ${status(r)} ${r.getBody}")
+            assert(r.getBody == ApiErrors.errorBody(msg), r.getBody)
+            assert(used.untouched)
+            // ... and the answer is the same as when it is not.
+            val free = new FakeDeps()
+            assert(generateSchemaWith(marketingKey, b, free).getBody == r.getBody)
+        }
+    }
+
+    // ------------------------------------------------------------ the pure rule
+
+    test("schemaOverwriteRefusal: refused only for an existing file used by a pipeline the caller may not update") {
+        val yes: PipelineConfig => Boolean = _ => true
+        val no: PipelineConfig => Boolean = _ => false
+        val onlyMarketing: PipelineConfig => Boolean = _.catalog == "Marketing"
+        assert(schemaOverwriteRefusal("orders.json", exists = false, Nil, no).isEmpty)
+        assert(schemaOverwriteRefusal("orders.json", exists = true, Nil, no).isEmpty)
+        assert(schemaOverwriteRefusal("orders.json", exists = true, Seq(mktOrders, hrPayroll), yes).isEmpty)
+        assert(schemaOverwriteRefusal("orders.json", exists = true, Seq(mktOrders), onlyMarketing).isEmpty)
+        val r = schemaOverwriteRefusal("orders.json", exists = true, Seq(mktOrders, hrPayroll), onlyMarketing)
+        assert(r.isDefined)
+        assert(status(r.get) == 409)
+        assert(r.get.getBody == ApiErrors.errorBody(InUse), r.get.getBody)
+        assert(!r.get.getBody.contains("hr_payroll_feed"))
+        assert(schemaOverwriteRefusal("orders.json", exists = true, Seq(salesOrders), no).get.getBody == r.get.getBody)
+    }
+}
