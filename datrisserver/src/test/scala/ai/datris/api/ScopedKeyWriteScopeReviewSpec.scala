@@ -499,7 +499,9 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         val catSrc = source("src/main/scala/ai/datris/api/CatalogAPIController.scala")
         assert(catSrc.split("CatalogAPIController.assertMemberWrite\\(request").length - 1 == 3, "cascade delete x2, enable-in-order")
         assert(catSrc.split("CatalogAPIController.assertMemberMove\\(request").length - 1 == 4, "rename x2, detach x2")
-        assert(catSrc.contains("CatalogAPIController.restoreMemberDenial(request, resource, name, caller, live)"))
+        assert(methodBody(catSrc, "def restoreCatalog(").contains("CatalogAPIController.restoreChecks("))
+        assert(methodBody(catSrc, "def restoreChecks(").contains("restoreMemberDenial(request, \"pipeline\", target, caller, live)"))
+        assert(methodBody(catSrc, "def restoreTapPreflight(").contains("restoreMemberDenial(request, \"tap\", target, caller,"))
         assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"update\""))
         assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"delete\""))
     }

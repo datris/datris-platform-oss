@@ -697,18 +697,29 @@ class CatalogAPIController {
                     case None => CatalogArchive.RepoScriptPlan(Nil, Set.empty, scripts.keySet, Set.empty, Set.empty)
                 }
                 val caller = ResolvedKeyAccess.keyLabel(request).orNull
-                // The per-member tap scope check runs once, here, so the
-                // script checks below judge only taps this caller would
-                // actually write; a refused tap lands in `failed` (step 0).
-                val (tapDenied, scriptClashes) =
-                    CatalogAPIController.restoreTapPreflight(request, name, caller, contents.taps.map(_.name), taps, repoPlan, repoCfg)
-                val allClashes = nameClashes ++ repoPlan.clashes ++ scriptClashes
-                if (allClashes.nonEmpty)
-                    return conflict(
-                        "The archive cannot be restored as '" + name + "': these names already exist on this install. " +
-                            "A restore never merges or replaces items outside the target catalog.",
-                        allClashes
-                    )
+                // 0. Scope-check every member before anything is written: a
+                //    refused member lands in `failed` and nothing of it (not
+                //    even its validation schema) is written. The script
+                //    checks judge only taps this caller would actually write.
+                val (pipelineDenied, tapDenied) = CatalogAPIController.restoreChecks(
+                    request,
+                    name,
+                    caller,
+                    nameClashes ++ repoPlan.clashes,
+                    contents.pipelines.map(p => p.name -> pipelines.find(_.name == p.name).map(l => (l.catalog, l.createdByKeyLabel))),
+                    contents.taps.map(_.name),
+                    taps,
+                    repoPlan,
+                    repoCfg
+                ) match {
+                    case Left(allClashes) =>
+                        return conflict(
+                            "The archive cannot be restored as '" + name + "': these names already exist on this install. " +
+                                "A restore never merges or replaces items outside the target catalog.",
+                            allClashes
+                        )
+                    case Right(denied) => denied
+                }
 
                 val preexistingTaps = taps.map(_.name).toSet.intersect(manifest.taps.toSet)
                 val actor = VersionActor.resolve(request)
@@ -716,15 +727,6 @@ class CatalogAPIController {
                 val warnings = mutable.ArrayBuffer.empty[String]
                 val skipped = mutable.ArrayBuffer.empty[String]
 
-                // 0. Scope-check every member before anything is written: a
-                //    refused member lands in `failed` and nothing of it (not
-                //    even its validation schema) is written. Taps were
-                //    checked above (tapDenied).
-                def denial(resource: String, live: Option[(String, String)]): Option[String] =
-                    CatalogAPIController.restoreMemberDenial(request, resource, name, caller, live)
-                val pipelineDenied = contents.pipelines.flatMap { p =>
-                    denial("pipeline", pipelines.find(_.name == p.name).map(l => (l.catalog, l.createdByKeyLabel))).map(p.name -> _)
-                }
                 val allowedPipelines = contents.pipelines.filterNot(p => pipelineDenied.exists(_._1 == p.name))
                 val allowedTaps = contents.taps.filterNot(t => tapDenied.exists(_._1 == t.name))
 
@@ -774,7 +776,8 @@ class CatalogAPIController {
                                     base.copy(lastTestRunScriptId = null)
                                 case Some(script) =>
                                     val live = TapConfigIO.read(DatrisEnvironment.current.tapTableName, n)
-                                    val stored = storeRestoredScript(store, repoCfg, repoPlan, n, script, live, actor, heldStrict, request, taps)
+                                    val stored =
+                                        CatalogAPIController.storeRestoredScript(store, repoCfg, repoPlan, n, script, live, actor, heldStrict, request, taps)
                                     base.copy(
                                         scriptStorage = stored.storage,
                                         scriptPath = stored.scriptPath,
@@ -1077,43 +1080,6 @@ class CatalogAPIController {
         }
     }
 
-    /** Store one restored tap script through the tenant default store. On a
-      * code repository a file already identical at branch head is pinned
-      * without a new commit. */
-    private def storeRestoredScript(
-        store: TapCodeStore,
-        repoCfg: Option[ai.datris.model.CodeRepoConfig],
-        plan: CatalogArchive.RepoScriptPlan,
-        tap: String,
-        script: String,
-        live: TapConfig,
-        actor: String,
-        heldStrict: Boolean,
-        request: HttpServletRequest,
-        liveTaps: Seq[TapConfig]
-    ): StoredScript =
-        repoCfg match {
-            case Some(cfg) if plan.reuse.contains(tap) =>
-                val path = GithubCodeStore.scriptRepoPath(tap, cfg)
-                val head = GithubClient.branchHeadSha(cfg)
-                GithubClient.getFile(cfg, path, head) match {
-                    case Some(_) => StoredScript(GithubCodeStore.storage, scriptRepoPath = path, scriptCommitSha = head)
-                    case None => throw new DatrisException("script file '" + path + "' disappeared from the code repository during restore")
-                }
-            case _ =>
-                // A live tap on another backend is not a prior for this store.
-                val prior = if (live != null && TapCodeStore.forTap(live).storage == store.storage) live else null
-                // Judged again on the tap as read now: the listing the clash
-                // check used skips a tap that could not be read.
-                if (store.storage == GithubCodeStore.storage) {
-                    CatalogAPIController.restoreWriteNotOwn(heldStrict, repoCfg, tap, prior).foreach(msg => throw new DatrisException(msg))
-                    CatalogAPIController
-                        .restoreWriteSharedFile(request, heldStrict, repoCfg, tap, prior, liveTaps)
-                        .foreach(msg => throw new DatrisException(msg))
-                }
-                store.storeScript(tap, script, prior, actor)
-        }
-
     /** Check one secret name against this install, gated by the caller's
       * secret read scope (see CatalogArchive.secretCheck). Also returns the
       * stored fields when the caller may read them. */
@@ -1378,9 +1344,15 @@ object CatalogAPIController {
         "tap '" + tap + "': script file '" + path + "' in the code repository (branch " + cfg.branch +
             ") cannot be written by this restore. Ask an administrator."
 
+    /** What the log line of a catalog restore script refusal says happened
+      * next: before anything is written the whole restore is refused; at
+      * the moment of writing only that tap is left out. */
+    private val RestoreRefusedLater = "The restore was refused and nothing was written."
+    private val RestoreWriteRefusedLater = "This tap was not written; the rest of the restore went ahead."
+
     /** The audit row of a rule S2 refusal at a catalog restore for a caller
-      * held to its own tap's script file. */
-    private def sharedFileRestoreRefused(request: HttpServletRequest, tap: String): Unit =
+      * held to its own tap's script file. `later`: what happened next. */
+    private def sharedFileRestoreRefused(request: HttpServletRequest, tap: String, later: String = RestoreRefusedLater): Unit =
         TapOwnerScopeReport.scriptStoreRefused(
             request,
             tap,
@@ -1388,7 +1360,20 @@ object CatalogAPIController {
             "catalog-restore",
             "a catalog restore by a caller whose tap access is limited to a catalog or to what it created was refused: " +
                 "the tap's code repository script file is also the current script of another tap",
-            "The restore was refused and nothing was written."
+            later
+        )
+
+    /** The audit row of a rule S4 refusal at a catalog restore for a caller
+      * held to its own tap's script file. `later`: what happened next. */
+    private def notOwnRestoreRefused(request: HttpServletRequest, tap: String, later: String): Unit =
+        TapOwnerScopeReport.scriptStoreRefused(
+            request,
+            tap,
+            "S4",
+            "catalog-restore",
+            "a catalog restore by a caller whose tap access is limited to a catalog or to what it created was refused: " +
+                "the tap's stored code repository path is not the tap's own script file",
+            later
         )
 
     /** Rule S4 at a catalog restore onto a code repository, for a caller held
@@ -1417,15 +1402,7 @@ object CatalogAPIController {
                     .find(_.name == tap)
                     .filter(l => storedNotOwn(tap, l, cfg))
                     .map { _ =>
-                        TapOwnerScopeReport.scriptStoreRefused(
-                            request,
-                            tap,
-                            "S4",
-                            "catalog-restore",
-                            "a catalog restore by a caller whose tap access is limited to a catalog or to what it created was refused: " +
-                                "the tap's stored code repository path is not the tap's own script file",
-                            "The restore was refused and nothing was written."
-                        )
+                        notOwnRestoreRefused(request, tap, RestoreRefusedLater)
                         restoreNotOwnMessage(tap)
                     }
             }
@@ -1479,15 +1456,96 @@ object CatalogAPIController {
         (denied, clashes)
     }
 
+    /** Every check a catalog restore makes before anything is written.
+      * Left(clashes) refuses the restore; Right((refused pipelines, refused
+      * taps)), each as (name, refusal message), lets it proceed without
+      * them. `earlyClashes` (names that already exist, repository files
+      * that differ at branch head) refuse first, before any member scope
+      * check, so such a restore notes no scope denial. Then each archived
+      * pipeline (`archivedPipelines`: name and the live copy's (catalog,
+      * owner)) goes once through [[restoreMemberDenial]], then the taps
+      * through [[restoreTapPreflight]], so scope denials are noted on the
+      * request pipelines first; a script clash of a tap the caller would
+      * write refuses the restore. */
+    private[api] def restoreChecks(
+        request: HttpServletRequest,
+        target: String,
+        caller: String,
+        earlyClashes: Seq[String],
+        archivedPipelines: Seq[(String, Option[(String, String)])],
+        archivedTaps: Seq[String],
+        liveTaps: Seq[TapConfig],
+        plan: CatalogArchive.RepoScriptPlan,
+        repoCfg: Option[CodeRepoConfig]
+    ): Either[Seq[String], (Seq[(String, String)], Seq[(String, String)])] =
+        if (earlyClashes.nonEmpty) Left(earlyClashes)
+        else {
+            val pipelineDenied = archivedPipelines.flatMap { case (n, live) =>
+                restoreMemberDenial(request, "pipeline", target, caller, live).map(n -> _)
+            }
+            val (tapDenied, scriptClashes) = restoreTapPreflight(request, target, caller, archivedTaps, liveTaps, plan, repoCfg)
+            if (scriptClashes.nonEmpty) Left(scriptClashes) else Right((pipelineDenied, tapDenied))
+        }
+
+    /** Store one restored tap script through `store` (the tenant default
+      * store). On a code repository a file already identical at branch head
+      * is pinned without a new commit. A tap script a caller held to its own
+      * tap's script file (`heldStrict`) may not write through the code
+      * repository ([[restoreWriteNotOwn]], [[restoreWriteSharedFile]]) is
+      * not written: a [[DatrisException]] fails that tap only. `live`: the
+      * tap as read just before the write. `liveTaps`: every stored tap. */
+    private[api] def storeRestoredScript(
+        store: TapCodeStore,
+        repoCfg: Option[CodeRepoConfig],
+        plan: CatalogArchive.RepoScriptPlan,
+        tap: String,
+        script: String,
+        live: TapConfig,
+        actor: String,
+        heldStrict: Boolean,
+        request: HttpServletRequest,
+        liveTaps: Seq[TapConfig]
+    ): StoredScript =
+        repoCfg match {
+            case Some(cfg) if plan.reuse.contains(tap) =>
+                val path = GithubCodeStore.scriptRepoPath(tap, cfg)
+                val head = GithubClient.branchHeadSha(cfg)
+                GithubClient.getFile(cfg, path, head) match {
+                    case Some(_) => StoredScript(GithubCodeStore.storage, scriptRepoPath = path, scriptCommitSha = head)
+                    case None => throw new DatrisException("script file '" + path + "' disappeared from the code repository during restore")
+                }
+            case _ =>
+                // A live tap on another backend is not a prior for this store.
+                val prior = if (live != null && TapCodeStore.forTap(live).storage == store.storage) live else null
+                // Judged again on the tap as read now: the listing the clash
+                // check used skips a tap that could not be read.
+                if (store.storage == GithubCodeStore.storage) {
+                    restoreWriteNotOwn(request, heldStrict, repoCfg, tap, prior).foreach(msg => throw new DatrisException(msg))
+                    restoreWriteSharedFile(request, heldStrict, repoCfg, tap, prior, liveTaps).foreach(msg => throw new DatrisException(msg))
+                }
+                store.storeScript(tap, script, prior, actor)
+        }
+
     /** At the moment a restored tap script is written through the code
       * repository store with `prior` (the tap as read just before the write)
       * as the reference it replaces: for a caller held to its own tap's
       * script file (`heldStrict`, [[heldStrictlyToOwnScriptFile]]) whose
       * `prior` is a repository tap with a stored path that is not the tap's
-      * own file, Some([[restoreNotOwnMessage]]) and that member is not
-      * written. None for every other caller and every other `prior`. */
-    private[api] def restoreWriteNotOwn(heldStrict: Boolean, repoCfg: Option[CodeRepoConfig], tap: String, prior: TapConfig): Option[String] =
-        if (heldStrict && storedNotOwn(tap, prior, repoCfg.orNull)) Some(restoreNotOwnMessage(tap)) else None
+      * own file, Some([[restoreNotOwnMessage]]) with one audit row (rule S4,
+      * site "catalog-restore"), and that member is not written while the
+      * rest of the restore goes ahead. None for every other caller and every
+      * other `prior`. */
+    private[api] def restoreWriteNotOwn(
+        request: HttpServletRequest,
+        heldStrict: Boolean,
+        repoCfg: Option[CodeRepoConfig],
+        tap: String,
+        prior: TapConfig
+    ): Option[String] =
+        if (heldStrict && storedNotOwn(tap, prior, repoCfg.orNull)) {
+            notOwnRestoreRefused(request, tap, RestoreWriteRefusedLater)
+            Some(restoreNotOwnMessage(tap))
+        } else None
 
     /** At the moment a restored tap script is written through the code
       * repository store with `prior` (the tap as read just before the write):
@@ -1496,8 +1554,9 @@ object CatalogAPIController {
       * `<prefix><tap>.py`) that is, normalised, the current repository script
       * of a tap of another name in `liveTaps`, Some(the held clash wording of
       * [[restoreTargetClashes]]) with one audit row (rule S2, site
-      * "catalog-restore"), and that member is not written. None for every
-      * other caller and every other file. */
+      * "catalog-restore"), and that member is not written while the rest of
+      * the restore goes ahead. None for every other caller and every other
+      * file. */
     private[api] def restoreWriteSharedFile(
         request: HttpServletRequest,
         heldStrict: Boolean,
@@ -1514,7 +1573,7 @@ object CatalogAPIController {
                         Some(prior.scriptRepoPath)
                     else scala.util.Try(GithubCodeStore.scriptRepoPath(tap, cfg)).toOption
                 path.filter(p => TapScriptOwnership.uploadTargetTaken(tap, p, Option(liveTaps).getOrElse(Nil))).map { p =>
-                    sharedFileRestoreRefused(request, tap)
+                    sharedFileRestoreRefused(request, tap, RestoreWriteRefusedLater)
                     restoreTargetHeldMessage(tap, p, cfg)
                 }
             }

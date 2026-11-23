@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.audit.{AuditEntry, AuditLog}
 import ai.datris.auth.ScopeDenialFixtures
 import ai.datris.model.{CodeRepoConfig, DatrisEnvironment, ResolvedKey, TapConfig, User}
-import ai.datris.util.{APIKeyValidator, CatalogArchive, TapOwnerScopeReport}
+import ai.datris.util.{APIKeyValidator, CatalogArchive, StoredScript, TapCodeStore, TapOwnerScopeReport}
 import ai.datris.util.InMemoryUserDb.grants
 import jakarta.servlet.http.HttpServletRequest
 import org.scalatest.BeforeAndAfterEach
@@ -53,6 +53,14 @@ import java.util.concurrent.atomic.AtomicInteger
   *    row) when another stored tap runs from the same file; at the write,
   *    the file it would be written to is judged the same way. Every other
   *    caller is unchanged.
+  *  - Catalog restore, at the write: each refusal writes one audit row, the
+  *    script store is not written for that tap, and the rest of the restore
+  *    goes ahead. An unrestricted caller's script is written as before.
+  *  - Catalog restore, all checks before anything is written: names that
+  *    already exist and repository files that differ at branch head refuse
+  *    the restore before any member scope check (so no scope denial is
+  *    noted); otherwise pipeline scope denials are noted before tap scope
+  *    denials, and the script checks judge only taps the caller would write.
   *  - Catalog cascade delete: one tap listing serves every tap delete of the
   *    cascade, read at most once (a failed read stays failed, so each delete
   *    keeps its file), and taps already deleted in the cascade no longer count
@@ -69,10 +77,17 @@ import java.util.concurrent.atomic.AtomicInteger
   *   private[api] def restoreTapPreflight(request: HttpServletRequest, target: String, caller: String, archivedTaps: Seq[String],
   *                                        liveTaps: Seq[TapConfig], plan: CatalogArchive.RepoScriptPlan,
   *                                        repoCfg: Option[CodeRepoConfig]): (Seq[(String, String)], Seq[String])
-  *   private[api] def restoreWriteNotOwn(heldStrict: Boolean, repoCfg: Option[CodeRepoConfig], tap: String,
-  *                                       prior: TapConfig): Option[String]
+  *   private[api] def restoreWriteNotOwn(request: HttpServletRequest, heldStrict: Boolean, repoCfg: Option[CodeRepoConfig],
+  *                                       tap: String, prior: TapConfig): Option[String]
   *   private[api] def restoreWriteSharedFile(request: HttpServletRequest, heldStrict: Boolean, repoCfg: Option[CodeRepoConfig],
   *                                           tap: String, prior: TapConfig, liveTaps: Seq[TapConfig]): Option[String]
+  *   private[api] def storeRestoredScript(store: TapCodeStore, repoCfg: Option[CodeRepoConfig], plan: CatalogArchive.RepoScriptPlan,
+  *                                        tap: String, script: String, live: TapConfig, actor: String, heldStrict: Boolean,
+  *                                        request: HttpServletRequest, liveTaps: Seq[TapConfig]): StoredScript
+  *   private[api] def restoreChecks(request: HttpServletRequest, target: String, caller: String, earlyClashes: Seq[String],
+  *                                  archivedPipelines: Seq[(String, Option[(String, String)])], archivedTaps: Seq[String],
+  *                                  liveTaps: Seq[TapConfig], plan: CatalogArchive.RepoScriptPlan,
+  *                                  repoCfg: Option[CodeRepoConfig]): Either[Seq[String], (Seq[(String, String)], Seq[(String, String)])]
   *   private[api] def cascadeListing(read: () => Seq[TapConfig]): (() => Seq[TapConfig], String => Unit)
   * }
   * }}}
@@ -291,19 +306,28 @@ class CatalogScriptOwnershipSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ================================================================ restore, at the write
 
-    test("restore write: a held caller's tap whose stored repository path is not its own file is refused with the rule S4 message") {
-        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(cfg), "orders", repo("orders", handPlaced)) ==
+    test("restore write: a held caller's tap whose stored repository path is not its own file is refused with the rule S4 message and one audit row") {
+        assert(CatalogAPIController.restoreWriteNotOwn(req(salesKey), heldStrict = true, Some(cfg), "orders", repo("orders", handPlaced)) ==
             Some(CatalogAPIController.restoreNotOwnMessage("orders")))
-        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(cfg), "orders", repo("orders", "elsewhere/orders.py")).isDefined)
+        val rows = refusedRows("orders")
+        assert(rows.size == 1, audit.toString)
+        val md = rows.head.metadata.get
+        assert(md.get("rule").getAsString == "S4" && md.get("site").getAsString == "catalog-restore" && md.get("enforced").getAsBoolean, md.toString)
+        assert(rows.head.outcome == "denied", rows.head.toString)
+        assert(CatalogAPIController.restoreWriteNotOwn(req(salesKey), heldStrict = true, Some(cfg), "orders", repo("orders", "elsewhere/orders.py")).isDefined)
+        assert(refusedRows("orders").size == 2, audit.toString)
     }
 
     test("restore write: unchanged for its own file, no repository reference, or a caller not held") {
         val withEarlier = cfg.copy(earlierPathPrefixes = new java.util.ArrayList[String](java.util.Arrays.asList("old-taps/")))
-        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(cfg), "orders", repo("orders", Prefix + "orders.py")).isEmpty)
-        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(withEarlier), "orders", repo("orders", "old-taps/orders.py")).isEmpty)
+        assert(CatalogAPIController.restoreWriteNotOwn(req(salesKey), heldStrict = true, Some(cfg), "orders", repo("orders", Prefix + "orders.py")).isEmpty)
+        assert(
+            CatalogAPIController.restoreWriteNotOwn(req(salesKey), heldStrict = true, Some(withEarlier), "orders", repo("orders", "old-taps/orders.py")).isEmpty
+        )
         for (prior <- Seq(null, builtIn("orders"), repo("orders", "")))
-            assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(cfg), "orders", prior).isEmpty, String.valueOf(prior))
-        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = false, Some(cfg), "orders", repo("orders", handPlaced)).isEmpty)
+            assert(CatalogAPIController.restoreWriteNotOwn(req(salesKey), heldStrict = true, Some(cfg), "orders", prior).isEmpty, String.valueOf(prior))
+        assert(CatalogAPIController.restoreWriteNotOwn(req(admin), heldStrict = false, Some(cfg), "orders", repo("orders", handPlaced)).isEmpty)
+        assert(refusedRows("orders").isEmpty, audit.toString)
     }
 
     test("restore write: the held predicate is the one the clash check uses, with the log-only exemption") {
@@ -388,6 +412,107 @@ class CatalogScriptOwnershipSpec extends AnyFunSuite with BeforeAndAfterEach {
             CatalogAPIController.restoreWriteSharedFile(req(salesKey), heldStrict = true, None, "orders", prior, Seq(repo("copy", Prefix + "orders.py"))).isEmpty
         )
         assert(s2Rows("orders").isEmpty, audit.toString)
+    }
+
+    // ================================================================ restore, storing the script
+
+    /** A code repository store that records each write and writes nothing. */
+    private class RecordingRepoStore extends TapCodeStore {
+        val writes = scala.collection.mutable.ArrayBuffer[String]()
+        protected def underlying: ai.datris.util.CodeStore = throw new UnsupportedOperationException("not used")
+        override def storage: String = "github"
+        override def storeScript(tapName: String, script: String, prior: TapConfig, actor: String): StoredScript = {
+            writes += tapName
+            StoredScript("github", scriptRepoPath = Prefix + tapName + ".py", scriptCommitSha = "new1234")
+        }
+    }
+
+    private def store(store: RecordingRepoStore, r: HttpServletRequest, live: TapConfig, liveTaps: Seq[TapConfig]) =
+        scala.util.Try(
+            CatalogAPIController.storeRestoredScript(
+                store,
+                Some(cfg),
+                plan("orders"),
+                "orders",
+                "print(1)",
+                live,
+                "tester",
+                CatalogAPIController.heldStrictlyToOwnScriptFile(r),
+                r,
+                liveTaps
+            )
+        )
+
+    test("restore store: a held caller's tap stored at a path that is not its own file is not written, with one audit row") {
+        val s = new RecordingRepoStore
+        val live = repo("orders", handPlaced)
+        val out = store(s, req(salesKey), live, Seq(live))
+        assert(out.failed.toOption.exists(_.getMessage == CatalogAPIController.restoreNotOwnMessage("orders")), out.toString)
+        assert(s.writes.isEmpty, s.writes.toString)
+        val rows = refusedRows("orders")
+        assert(rows.size == 1 && rows.head.metadata.get.get("rule").getAsString == "S4", audit.toString)
+    }
+
+    test("restore store: a held caller's tap whose file another stored tap also runs from is not written, with one audit row") {
+        val s = new RecordingRepoStore
+        val live = repo("orders", Prefix + "orders.py")
+        val out = store(s, req(salesKey), live, Seq(live, repo("copy", Prefix + "orders.py")))
+        assert(out.failed.toOption.exists(_.getMessage.contains("cannot be written by this restore")), out.toString)
+        assert(s.writes.isEmpty, s.writes.toString)
+        assert(refusedRows("orders").size == 1 && s2Rows("orders").size == 1, audit.toString)
+    }
+
+    test("restore store: an unrestricted caller's script is written as before, over either prior") {
+        for (rk <- Seq(admin, fullKey)) {
+            val s = new RecordingRepoStore
+            val notOwn = repo("orders", handPlaced)
+            assert(store(s, req(rk), notOwn, Seq(notOwn)).isSuccess, rk.label)
+            val shared = repo("orders", Prefix + "orders.py")
+            assert(store(s, req(rk), shared, Seq(shared, repo("copy", Prefix + "orders.py"))).isSuccess, rk.label)
+            assert(s.writes == Seq("orders", "orders"), rk.label + ": " + s.writes)
+        }
+        // a held caller's tap on its own, unshared file is written too
+        val s = new RecordingRepoStore
+        val own = repo("orders", Prefix + "orders.py")
+        assert(store(s, req(salesKey), own, Seq(own)).isSuccess && s.writes == Seq("orders"))
+        assert(refusedRows("orders").isEmpty, audit.toString)
+    }
+
+    // ================================================================ restore, every check before anything is written
+
+    private def checks(r: HttpServletRequest, rk: ResolvedKey, early: Seq[String], pipelines: Seq[String], live: Seq[TapConfig], taps: String*) =
+        CatalogAPIController.restoreChecks(r, "Sales", rk.label, early, pipelines.map(_ -> None), taps, live, plan(taps: _*), Some(cfg))
+
+    test("restore checks: a tap the caller may not write is left out of the script checks, so the rest of the restore proceeds") {
+        // finance-tap is stored at a path that is not its own file and its
+        // file is also another tap's: either would be a clash if judged.
+        val live = Seq(inCatalog(repo("finance-tap", handPlaced), "Finance"), repo("copy", handPlaced), inCatalog(builtIn("orders"), "Sales"))
+        val out = checks(req(salesKey), salesKey, Nil, Nil, live, "finance-tap", "orders")
+        assert(out.isRight, out.toString)
+        assert(out.toOption.get._2.map(_._1) == Seq("finance-tap"), out.toString)
+        assert(refusedRows("finance-tap").isEmpty, audit.toString)
+        // the same tap, writable by the caller, is a clash
+        val mine = Seq(inCatalog(repo("finance-tap", handPlaced), "Sales"), inCatalog(builtIn("orders"), "Sales"))
+        assert(checks(req(salesKey), salesKey, Nil, Nil, mine, "finance-tap", "orders") == Left(Seq(CatalogAPIController.restoreNotOwnMessage("finance-tap"))))
+    }
+
+    test("restore checks: pipeline scope denials are noted before tap scope denials, each member checked once") {
+        val r = req(salesKey)
+        val live = Seq(inCatalog(builtIn("finance-tap"), "Finance"))
+        val out = checks(r, salesKey, Nil, Seq("orders-pipeline"), live, "finance-tap")
+        assert(out.toOption.exists { case (p, t) => p.map(_._1) == Seq("orders-pipeline") && t.map(_._1) == Seq("finance-tap") }, out.toString)
+        val notes = AuditLog.scopeDenials(r).map(_._1)
+        assert(notes.nonEmpty && notes.head.startsWith("pipeline:") && notes.last.startsWith("tap:"), notes.toString)
+        assert(notes.count(_.startsWith("pipeline:")) == 1 && notes.count(_.startsWith("tap:")) == 1, notes.toString)
+    }
+
+    test("restore checks: a name that already exists refuses the restore before any member scope check") {
+        val r = req(salesKey)
+        val live = Seq(inCatalog(repo("finance-tap", handPlaced), "Finance"))
+        val out = checks(r, salesKey, Seq("tap 'x' already exists"), Seq("orders-pipeline"), live, "finance-tap")
+        assert(out == Left(Seq("tap 'x' already exists")), out.toString)
+        assert(AuditLog.scopeDenials(r).isEmpty, AuditLog.scopeDenials(r).toString)
+        assert(audit.isEmpty, audit.toString)
     }
 
     // ================================================================ cascade delete listing
