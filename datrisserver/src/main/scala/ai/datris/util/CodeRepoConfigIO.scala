@@ -12,19 +12,26 @@ object CodeRepoConfigIO {
 
     def read(): Option[CodeRepoConfig] = {
         val tableName = DatrisEnvironment.current.codeRepoTableName
-        NoSQLDbUtil.getItemJSON(tableName, "name", "default", "value").map { json =>
-            val config = new Gson().fromJson(json, classOf[CodeRepoConfig])
-            // Gson skips Scala defaults for absent fields — normalize the ones
-            // where null would break URL/path building downstream.
-            var normalized = config
-            if (normalized.apiBaseUrl == null || normalized.apiBaseUrl.isEmpty)
-                normalized = normalized.copy(apiBaseUrl = "https://api.github.com")
-            if (normalized.branch == null || normalized.branch.isEmpty)
-                normalized = normalized.copy(branch = "main")
-            if (normalized.pathPrefix == null)
-                normalized = normalized.copy(pathPrefix = "")
-            normalized
-        }
+        NoSQLDbUtil.getItemJSON(tableName, "name", "default", "value").map(parse)
+    }
+
+    /** The stored document `json` as a configuration. Gson skips Scala
+      * defaults for absent fields, so the ones where null would break
+      * URL/path building downstream are normalised, and a document stored
+      * before `earlierPathPrefixes` existed reads it as an empty list. Only
+      * the value read is normalised; the stored document is not rewritten. */
+    private[datris] def parse(json: String): CodeRepoConfig = {
+        val config = new Gson().fromJson(json, classOf[CodeRepoConfig])
+        var normalized = config
+        if (normalized.apiBaseUrl == null || normalized.apiBaseUrl.isEmpty)
+            normalized = normalized.copy(apiBaseUrl = "https://api.github.com")
+        if (normalized.branch == null || normalized.branch.isEmpty)
+            normalized = normalized.copy(branch = "main")
+        if (normalized.pathPrefix == null)
+            normalized = normalized.copy(pathPrefix = "")
+        if (normalized.earlierPathPrefixes == null)
+            normalized = normalized.copy(earlierPathPrefixes = new java.util.ArrayList[String]())
+        normalized
     }
 
     /** The repo config iff it is enabled and complete enough to use. */

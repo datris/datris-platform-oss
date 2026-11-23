@@ -29,8 +29,7 @@ class CodeRepoAPIController {
     def getCodeRepo(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
-            val config = CodeRepoConfigIO.read().getOrElse(CodeRepoConfig())
-            new ResponseEntity[String](new Gson().toJson(config), HttpStatus.OK)
+            new ResponseEntity[String](CodeRepoAPIController.getBody(CodeRepoConfigIO.read()), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -264,6 +263,17 @@ class CodeRepoAPIController {
 }
 
 object CodeRepoAPIController {
+
+    /** The `GET /code-repo` body for the `stored` configuration (the defaults
+      * when none is stored). `earlierPathPrefixes` is always present: an
+      * empty list when none are recorded. */
+    private[datris] def getBody(stored: Option[CodeRepoConfig]): String = {
+        val config = stored.filter(_ != null).getOrElse(CodeRepoConfig())
+        val shown =
+            if (config.earlierPathPrefixes == null) config.copy(earlierPathPrefixes = new java.util.ArrayList[String]())
+            else config
+        new Gson().toJson(shown)
+    }
 
     /** What `PUT /code-repo` stores for `incoming` over the `stored`
       * configuration: the earlier path prefixes are the body's list, or the
