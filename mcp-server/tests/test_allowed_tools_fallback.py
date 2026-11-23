@@ -1,15 +1,18 @@
 """Story: A chat stops when its user can no longer be verified, and the tool
 list is never wider than what the server said.
 
-`list_tools` offers the tools `GET /api/v1/mcp/tools` allows. Three outcomes:
+`list_tools` offers the tools `GET /api/v1/mcp/tools` allows:
   - `{"filtered": true, "tools": [...]}`  -> exactly that set;
   - `{"filtered": false, ...}`            -> the full catalogue (full-access
                                              identity or keys-off install);
-  - anything else (401/403/5xx, a connection error or timeout, a body that
-    is not JSON, an unexpected shape) -> the last good answer for the same
-    key and on-behalf-of user when it is younger than 15 minutes, otherwise
-    no tools, with a clear stderr line. A failure is cached for 10 seconds.
-  - HTTP 404 (a platform older than the endpoint) -> the full catalogue.
+  - HTTP 404 (a platform older than the endpoint) -> the full catalogue;
+  - refused (401, 403) -> no tools at once, replacing any earlier list for
+    the same key and on-behalf-of user, with a stderr line saying so;
+  - could not be asked (5xx, a connection error or timeout, a body that is
+    not the expected JSON) -> what the platform last said for the same key
+    and user, however old; the full catalogue when it has not answered for
+    them in this process (as before), said on stderr.
+A refusal or a failure to ask is re-asked after 10 seconds.
 
 The REST layer stays the boundary: `call_tool` is unchanged and a tool that
 is not listed is still dispatched and decided by REST.
@@ -17,7 +20,7 @@ is not listed is still dispatched and decided by REST.
 Seams: the HTTP fetch is faked at `requests.get` (what `_call` uses today), so
 the test does not depend on whether the implementation reads the status via
 `_call` or directly. The clock is faked by replacing the `time` module that
-`server` sees, so the 15-minute and 10-second rules need no sleeping.
+`server` sees, so the time-based rules need no sleeping.
 """
 import asyncio
 import json
@@ -115,12 +118,16 @@ def _filtered(*names):
     return (200, json.dumps({"filtered": True, "tools": list(names)}))
 
 
-# Every reply that is not a usable answer from a platform that has the endpoint.
-FAILURES = [
+# The platform answered and refused the key or user.
+REFUSALS = [
     pytest.param((401, '{"error":"API key is revoked or invalid"}'), id="401-rejected-key"),
     pytest.param((401, '{"error":"The user this request acts for could not be verified",'
                        '"errorKind":"acting_user_unverified"}'), id="401-unverified-user"),
     pytest.param((403, '{"error":"capability denied","errorKind":"capability_denied"}'), id="403"),
+]
+
+# The platform could not be asked: no usable answer from a platform that has the endpoint.
+UNREACHABLE = [
     pytest.param((500, '{"error":"Internal error"}'), id="500"),
     pytest.param((503, '{"error":"The user this request acts for could not be checked: the user store is unavailable",'
                        '"errorKind":"user_store_unavailable"}'), id="503-user-store"),
@@ -129,7 +136,10 @@ FAILURES = [
     pytest.param((502, "<html><body>Bad Gateway</body></html>"), id="non-json"),
     pytest.param((200, json.dumps({"filtered": True})), id="filtered-without-tools"),
     pytest.param((200, json.dumps(["get_pipeline"])), id="unexpected-shape"),
+    pytest.param((200, '{"filtered": true, "tools": ['), id="malformed-json"),
 ]
+
+FAILURES = REFUSALS + UNREACHABLE
 
 
 # --- the server answered -----------------------------------------------------
@@ -161,18 +171,41 @@ def test_not_found_from_an_older_platform_keeps_the_full_catalogue(env):
 
 # --- the server could not answer ---------------------------------------------
 
-@pytest.mark.parametrize("failure", FAILURES)
-def test_failure_with_nothing_cached_lists_no_tools(env, failure, capsys):
+@pytest.mark.parametrize("failure", REFUSALS)
+def test_a_refusal_with_nothing_cached_lists_no_tools(env, failure, capsys):
     platform, _ = env
     platform.answer = failure
     assert _listed() == set()
     err = capsys.readouterr().err.lower()
     assert "no tools" in err, err
+    assert "refused" in err, err
     assert "full catalog" not in err, err
 
 
-@pytest.mark.parametrize("failure", FAILURES)
-def test_failure_within_fifteen_minutes_of_a_good_answer_lists_the_last_good_set(env, failure):
+@pytest.mark.parametrize("failure", UNREACHABLE)
+def test_could_not_ask_before_any_answer_lists_the_full_catalogue(env, failure, capsys):
+    platform, _ = env
+    platform.answer = failure
+    assert _listed() == _full()
+    err = capsys.readouterr().err.lower()
+    assert "could not ask" in err, err
+    assert "full catalog" in err, err
+
+
+@pytest.mark.parametrize("failure", REFUSALS)
+def test_a_refusal_after_a_good_answer_lists_no_tools_at_once(env, failure, capsys):
+    platform, clock = env
+    platform.answer = _filtered("get_pipeline")
+    assert _listed() == {"get_pipeline"}
+    clock.now += 61
+    platform.answer = failure
+    assert _listed() == set()
+    err = capsys.readouterr().err.lower()
+    assert "no tools" in err and "full catalog" not in err, err
+
+
+@pytest.mark.parametrize("failure", UNREACHABLE)
+def test_could_not_ask_after_a_good_answer_lists_the_last_good_set(env, failure):
     platform, clock = env
     platform.answer = _filtered("get_pipeline")
     assert _listed() == {"get_pipeline"}
@@ -183,14 +216,31 @@ def test_failure_within_fifteen_minutes_of_a_good_answer_lists_the_last_good_set
     assert _listed() == {"get_pipeline"}
 
 
-@pytest.mark.parametrize("failure", FAILURES)
-def test_failure_more_than_fifteen_minutes_after_the_last_good_answer_lists_no_tools(env, failure):
+@pytest.mark.parametrize("failure", UNREACHABLE)
+def test_could_not_ask_long_after_the_last_good_answer_still_lists_it(env, failure):
     platform, clock = env
     platform.answer = _filtered("get_pipeline")
     assert _listed() == {"get_pipeline"}
     platform.answer = failure
     clock.now += FIFTEEN_MIN + 1
+    assert _listed() == {"get_pipeline"}
+    clock.now += 24 * 3600
+    assert _listed() == {"get_pipeline"}
+
+
+@pytest.mark.parametrize("failure", UNREACHABLE)
+def test_could_not_ask_after_a_refusal_still_lists_no_tools(env, failure, capsys):
+    platform, clock = env
+    platform.answer = _filtered("get_pipeline")
+    assert _listed() == {"get_pipeline"}
+    clock.now += 61
+    platform.answer = (401, '{"error":"API key is revoked or invalid"}')
     assert _listed() == set()
+    clock.now += 11
+    platform.answer = failure
+    assert _listed() == set()
+    err = capsys.readouterr().err.lower()
+    assert "full catalog" not in err, err
 
 
 def test_last_good_unfiltered_answer_is_kept_through_a_short_outage(env):
@@ -202,18 +252,26 @@ def test_last_good_unfiltered_answer_is_kept_through_a_short_outage(env):
     assert _listed() == _full()
 
 
-def test_revoked_key_keeps_its_list_no_longer_than_fifteen_minutes(env):
+def test_a_refused_key_loses_its_list_at_once(env):
     platform, clock = env
     platform.answer = _filtered("get_pipeline", "delete_pipeline")
     assert _listed("revoked-later") == {"get_pipeline", "delete_pipeline"}
     platform.answer = (401, '{"error":"API key is revoked or invalid"}')
+    clock.now += 61  # the good answer's reuse has ended, so the next listing asks again
+    assert _listed("revoked-later") == set()
     start = clock.now
     while clock.now - start <= FIFTEEN_MIN + 120:
         clock.now += 11
-        listed = _listed("revoked-later")
-        assert listed <= {"get_pipeline", "delete_pipeline"}
-        if clock.now - start > FIFTEEN_MIN:
-            assert listed == set(), f"still listed {clock.now - start:.0f}s after the last good answer"
+        assert _listed("revoked-later") == set(), f"listed again {clock.now - start:.0f}s after the refusal"
+
+
+def test_recovery_after_a_refusal_serves_the_new_answer(env):
+    platform, clock = env
+    platform.answer = (403, '{"error":"capability denied","errorKind":"capability_denied"}')
+    assert _listed() == set()
+    clock.now += 11
+    platform.answer = _filtered("list_pipelines")
+    assert _listed() == {"list_pipelines"}
 
 
 def test_listing_is_never_wider_than_the_last_answer_the_server_gave(env):
@@ -230,15 +288,28 @@ def test_listing_is_never_wider_than_the_last_answer_the_server_gave(env):
 def test_a_failure_is_cached_for_ten_seconds(env):
     platform, clock = env
     platform.answer = (500, '{"error":"Internal error"}')
-    assert _listed() == set()
+    assert _listed() == _full()
     assert platform.fetches == 1
     clock.now += 9
-    assert _listed() == set()
+    assert _listed() == _full()
     assert platform.fetches == 1, "a failure must be served from the cache for 10 seconds"
     clock.now += 2
     platform.answer = _filtered("get_pipeline")
     assert _listed() == {"get_pipeline"}
     assert platform.fetches == 2, "a failure must not be cached longer than 10 seconds"
+
+
+def test_a_refusal_is_cached_for_ten_seconds(env):
+    platform, clock = env
+    platform.answer = (401, '{"error":"API key is revoked or invalid"}')
+    assert _listed() == set()
+    clock.now += 9
+    assert _listed() == set()
+    assert platform.fetches == 1
+    clock.now += 2
+    platform.answer = _filtered("get_pipeline")
+    assert _listed() == {"get_pipeline"}
+    assert platform.fetches == 2
 
 
 def test_recovery_after_a_failure_serves_the_new_answer(env):
@@ -263,9 +334,23 @@ def test_last_good_is_kept_per_key_and_on_behalf_of_user(env):
     platform.answer = requests.ConnectionError("connection refused")
     assert _listed("ui-key", "bob") == {"get_pipeline"}
     assert _listed("ui-key", "root") == {"get_pipeline", "delete_pipeline"}
-    # Neither user's last good answer is served to a user or key with none.
-    assert _listed("ui-key", "carol") == set()
-    assert _listed("other-key", "bob") == set()
+    # Neither user's last good answer is served to a user or key with none:
+    # they get the full catalogue, as before any answer.
+    assert _listed("ui-key", "carol") == _full()
+    assert _listed("other-key", "bob") == _full()
+
+
+def test_a_refusal_for_one_user_leaves_another_users_list(env):
+    platform, clock = env
+    platform.answer = _filtered("get_pipeline", "delete_pipeline")
+    assert _listed("ui-key", "root") == {"get_pipeline", "delete_pipeline"}
+    platform.answer = (401, '{"error":"The user this request acts for could not be verified",'
+                            '"errorKind":"acting_user_unverified"}')
+    assert _listed("ui-key", "gone") == set()
+    clock.now += 61
+    platform.answer = requests.ConnectionError("connection refused")
+    assert _listed("ui-key", "root") == {"get_pipeline", "delete_pipeline"}
+    assert _listed("ui-key", "gone") == set()
 
 
 # --- unchanged: call_tool is decided by REST, not by the listing -------------

@@ -43,16 +43,22 @@ object TenantInterceptor {
       * ignored on such a request). */
     val OnBehalfOfCarrierAttr: String = "ai.datris.onBehalfOfCarrier"
 
+    /** `errorKind` of [[UnverifiedUserBody]]. */
+    final val UnverifiedUserErrorKind: String = "acting_user_unverified"
+
+    /** `errorKind` of [[UserStoreUnavailableBody]]. */
+    final val UserStoreUnavailableErrorKind: String = "user_store_unavailable"
+
     /** Body of the 401 a trusted carrier gets when the on-behalf-of user is
       * unknown or was deleted. Names neither the user nor the carrier, and is
       * not the capability-denied body: the identity, not a permission, failed. */
     val UnverifiedUserBody: String =
-        "{\"error\":\"The user this request acts for could not be verified\",\"errorKind\":\"acting_user_unverified\"}"
+        "{\"error\":\"The user this request acts for could not be verified\",\"errorKind\":\"" + UnverifiedUserErrorKind + "\"}"
 
     /** Body of the 503 a trusted carrier gets when the user store could not
       * be read to resolve the on-behalf-of user. */
     val UserStoreUnavailableBody: String =
-        "{\"error\":\"The user this request acts for could not be checked: the user store is unavailable\",\"errorKind\":\"user_store_unavailable\"}"
+        "{\"error\":\"The user this request acts for could not be checked: the user store is unavailable\",\"errorKind\":\"" + UserStoreUnavailableErrorKind + "\"}"
 
     /** The identity a trusted carrier (`ui`, or the keys-off identity) gets
       * acting on behalf of `user`. Pure: reads no thread-local and no store.

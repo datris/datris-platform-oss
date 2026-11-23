@@ -3,6 +3,7 @@ import { Subscription } from 'rxjs';
 import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, HistoryToolCall, RuleProposalItem, SchemaProposalField, StagedAttachment } from '../assistant.service';
 import { loadChatState, saveChatState, clearChatState } from '../shared/chat-persistence';
 import { handleRetryEvent, AttemptMark } from '../shared/chat-retry';
+import { settleUnrunToolCards } from '../shared/chat-stream-end';
 
 /** Tool invocation inside an assistant turn. */
 export interface ToolCard {
@@ -957,6 +958,7 @@ export class AssistantStateService {
       case 'error':
         turn.errorMessage = evt.message;
         turn.done = true;
+        settleUnrunToolCards(turn.segments);
         break;
     }
   }

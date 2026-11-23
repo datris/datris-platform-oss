@@ -1677,12 +1677,28 @@ async def read_resource(ctx: ServerRequestContext | None,
 # Profile filter: ask the Scala server which tools this session's key may
 # see, so list_tools matches what the REST capability layer would actually
 # allow. The tool→route mapping lives ONLY on the server (MCPToolRoutes) —
-# never copy it here, it would drift. Cached per key and on-behalf-of user
-# with a short TTL so a template edit applies on reconnect without hammering
-# the endpoint.
-_allowed_tools_cache: dict[tuple[str, str], tuple[float, set | None]] = {}
+# never copy it here, it would drift. Cached per key and on-behalf-of user.
+#
+# What is listed, by what the platform answered:
+#   - the list (`filtered: true` + `tools`)    -> exactly that list;
+#   - unfiltered (`filtered: false`)            -> the full catalog;
+#   - 404 (a platform older than the endpoint) -> the full catalog;
+#   - refused (401, 403)                        -> no tools; this replaces the
+#                                                  last good list for the key/user;
+#   - could not be asked (connection error, timeout, 5xx, any other status,
+#     a body that is not the expected JSON)     -> what the platform last said
+#     for the key/user however old (never wider than that), or the full
+#     catalog when it has not answered for the key/user in this process.
+# Visibility is UX; the REST layer decides every call. An answer is reused
+# for 60 seconds; a refusal or a failure to ask is re-asked after 10 seconds.
+_allowed_tools_cache: dict[tuple[str, str], dict] = {}
 _allowed_tools_lock = threading.Lock()
 _ALLOWED_TOOLS_TTL = 60.0
+_ALLOWED_TOOLS_FAILURE_TTL = 10.0
+_ALLOWED_TOOLS_PATH = "/api/v1/mcp/tools"
+
+# Sentinel for "the platform has not answered yet" in a cache entry's `last_good`.
+_NO_GOOD_ANSWER = object()
 
 
 def _allowed_tools_cache_key(api_key: str | None, on_behalf_of: str | None) -> tuple[str, str]:
@@ -1692,30 +1708,82 @@ def _allowed_tools_cache_key(api_key: str | None, on_behalf_of: str | None) -> t
     return (api_key or "", on_behalf_of or "")
 
 
+def _fetch_allowed_tools() -> tuple[int | None, str]:
+    """GET the tools endpoint with this session's identity headers. Returns
+    (HTTP status, body), or (None, reason) when the platform could not be
+    reached at all."""
+    try:
+        resp = requests.get(f"{DATRIS_API_URL}{_ALLOWED_TOOLS_PATH}", headers=_headers(), timeout=15)
+        return resp.status_code, resp.text
+    except requests.RequestException as e:
+        return None, str(e)
+
+
+def _error_detail(body: str) -> str:
+    try:
+        data = json.loads(body)
+        if isinstance(data, dict) and "error" in data:
+            return str(data["error"])[:120]
+    except (ValueError, TypeError):
+        pass
+    return (body or "")[:120]
+
+
+def _classify_allowed_tools(status: int | None, body: str):
+    """('answer', set|None) for a usable answer (None: no filtering),
+    ('refused', detail) or ('unreachable', detail)."""
+    if status is None:
+        return "unreachable", body[:120]
+    if status == 404:
+        return "answer", None
+    if status in (401, 403):
+        return "refused", f"HTTP {status}: {_error_detail(body)}"
+    if status != 200:
+        return "unreachable", f"HTTP {status}: {_error_detail(body)}"
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError) as e:
+        return "unreachable", f"unreadable answer: {e}"[:120]
+    if isinstance(data, dict) and data.get("filtered") is True and isinstance(data.get("tools"), list):
+        return "answer", set(data["tools"])
+    if isinstance(data, dict) and data.get("filtered") is False:
+        return "answer", None
+    return "unreachable", "unexpected answer shape"
+
+
 def _allowed_tool_names() -> set | None:
     """Return the set of tool names this session's key may see, or None for
-    'no filtering' (keys off, legacy full-access key, or the server could
-    not answer — visibility is UX, the REST 403 stays the boundary)."""
+    'no filtering' (the full catalog). See the table above for each answer."""
     key = _allowed_tools_cache_key(_effective_api_key(), _session_on_behalf_of.get())
     now = time.time()
     with _allowed_tools_lock:
         cached = _allowed_tools_cache.get(key)
-        if cached and now - cached[0] < _ALLOWED_TOOLS_TTL:
-            return cached[1]
-    allowed: set | None = None
-    try:
-        data = json.loads(_call("get", "/api/v1/mcp/tools", timeout=15))
-        if isinstance(data, dict) and data.get("filtered") and isinstance(data.get("tools"), list):
-            allowed = set(data["tools"])
-        elif isinstance(data, dict) and "error" in data:
-            # Unauthorized key or older server without the endpoint — fall
-            # back to the full catalog; every call still 403s at REST.
-            print(f"mcp/tools filter unavailable ({str(data['error'])[:120]}); serving full catalog", file=sys.stderr)
-    except (json.JSONDecodeError, TypeError) as e:
-        print(f"mcp/tools filter unavailable ({e}); serving full catalog", file=sys.stderr)
+        if cached and now - cached["checked_at"] < cached["ttl"]:
+            return cached["served"]
+        last_good = cached["last_good"] if cached else _NO_GOOD_ANSWER
+    kind, value = _classify_allowed_tools(*_fetch_allowed_tools())
+    if kind == "answer":
+        served, ttl, last_good = value, _ALLOWED_TOOLS_TTL, value
+    elif kind == "refused":
+        # The refusal is now the last thing the platform said: a later
+        # failure to ask must not widen it back to an older list.
+        served, ttl, last_good = set(), _ALLOWED_TOOLS_FAILURE_TTL, set()
+        print(f"mcp/tools: the platform refused this key ({value}); no tools are offered", file=sys.stderr)
+    elif last_good is not _NO_GOOD_ANSWER:
+        served, ttl = last_good, _ALLOWED_TOOLS_FAILURE_TTL
+        if last_good is not None and not last_good:
+            print(f"mcp/tools: could not ask the platform which tools to offer ({value}); "
+                  "no tools are offered: its last answer for this key allowed none", file=sys.stderr)
+        else:
+            print(f"mcp/tools: could not ask the platform which tools to offer ({value}); "
+                  "serving the last list it gave", file=sys.stderr)
+    else:
+        served, ttl = None, _ALLOWED_TOOLS_FAILURE_TTL
+        print(f"mcp/tools: could not ask the platform which tools to offer ({value}) and it has not answered yet; "
+              "serving the full catalog until it does (every call is still checked by the platform)", file=sys.stderr)
     with _allowed_tools_lock:
-        _allowed_tools_cache[key] = (now, allowed)
-    return allowed
+        _allowed_tools_cache[key] = {"checked_at": now, "ttl": ttl, "served": served, "last_good": last_good}
+    return served
 
 
 async def list_tools(ctx: ServerRequestContext | None,

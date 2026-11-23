@@ -4,6 +4,7 @@ import { ChatMessage, AssistantEvent } from '../assistant.service';
 import { ConfigAssistantService } from './config-assistant.service';
 import { ConfigChatContextService } from './config-chat-context.service';
 import { handleRetryEvent } from '../shared/chat-retry';
+import { settleUnrunToolCards } from '../shared/chat-stream-end';
 
 /** A mutating tool the server wants the user to approve. The card shows the
  *  summary with Confirm / Cancel; `decide()` settles it exactly once. */
@@ -367,6 +368,7 @@ export class ConfigAssistantStateService {
       case 'error':
         turn.errorMessage = evt.message;
         turn.done = true;
+        settleUnrunToolCards(turn.segments);
         break;
     }
   }

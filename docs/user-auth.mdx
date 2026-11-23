@@ -71,7 +71,7 @@ The in-platform chats (the Assistant, the Operations chat, the catalog chat and 
 
 The Configuration chat stays admin-only. With API keys off (`USE_API_KEYS=false`) and user sign-in on, the chats are still held to the role, although an editor's own requests in the UI are not narrowed that way in that mode.
 
-A request that carries a sign-in session always acts as that session's user. If the user a chat acts for is deleted while the chat runs, its next tool calls are refused (`401`), and while the user list cannot be read they answer `503`; a chat never falls back to the platform's own access.
+A request that carries a sign-in session always acts as that session's user. If the user a chat acts for is deleted while the chat runs, its next tool call is refused (`401`) and the chat stops at once with `This chat was stopped: the user it was acting for could not be verified. Sign in again to continue.` It makes no further tool calls in that reply and spends no more AI tokens on it; tool cards for calls it had not made yet show as not run. While the user list cannot be read, tool calls answer `503`: the chat goes on after one such answer, and stops with a message saying the platform could not check the user after the second reply in a row whose tool calls failed that way (a successful tool call in between starts the count again). A chat never falls back to the platform's own access.
 
 With API keys on, a request to an admin-only route with no credential answers `401 Authentication required` (a revoked or unknown key `401`, an unreachable key store `503`); a signed-in user without the role still gets `403 Insufficient role`.
 

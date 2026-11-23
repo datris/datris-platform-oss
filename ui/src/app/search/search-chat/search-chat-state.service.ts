@@ -5,6 +5,7 @@ import { SearchChatService } from './search-chat.service';
 import { SearchChatContextService } from './search-chat-context.service';
 import { loadChatState, saveChatState, clearChatState } from '../../shared/chat-persistence';
 import { handleRetryEvent } from '../../shared/chat-retry';
+import { settleUnrunToolCards } from '../../shared/chat-stream-end';
 
 export interface ToolCard {
   kind: 'tool';
@@ -218,6 +219,7 @@ export class SearchChatStateService {
       case 'error':
         turn.errorMessage = evt.message;
         turn.done = true;
+        settleUnrunToolCards(turn.segments);
         break;
       case 'secret_request':
         // The read-only search agent has no credential-collecting tools, so a

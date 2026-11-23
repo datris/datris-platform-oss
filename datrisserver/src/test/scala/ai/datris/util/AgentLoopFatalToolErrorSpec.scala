@@ -272,12 +272,127 @@ class AgentLoopFatalToolErrorSpec extends AnyFunSuite {
         val failures = otherFailures.map(_._2)
         val h = new Harness(
             model = (1 to failures.size + 1).map(i => wantsTools(toolUse("t" + i, "list_pipelines"))).toList :+ answers("Done."),
-            tools = failures :+ Fails(TenantInterceptor.UserStoreUnavailableBody) :+ Ok(okBody)
+            tools = failures :+ Fails(TenantInterceptor.UserStoreUnavailableBody) :+ Ok(okBody),
+            maxIterations = failures.size + 5
         )
         val evs = h.run()
         assert(h.modelCalls == failures.size + 2)
         assert(errors(evs).isEmpty, evs)
         assert(evs.last == LoopEvent.Done)
+    }
+
+    test("several user-store failures in one batch of tool calls count once") {
+        val h = new Harness(
+            model = List(
+                wantsTools(toolUse("t1", "list_pipelines"), toolUse("t2", "get_pipeline"), toolUse("t3", "list_taps")),
+                answers("Done.")
+            ),
+            tools = List(Fails(TenantInterceptor.UserStoreUnavailableBody))
+        )
+        val evs = h.run()
+        assert(h.modelCalls == 2)
+        assert(h.toolCalls.toList == List("list_pipelines", "get_pipeline", "list_taps"))
+        assert(errors(evs).isEmpty, evs)
+        assert(evs.last == LoopEvent.Done)
+    }
+
+    test("a user-store failure in the next batch after a batch of them ends the run at that tool call") {
+        val h = new Harness(
+            model = List(
+                wantsTools(toolUse("t1", "list_pipelines"), toolUse("t2", "get_pipeline")),
+                wantsTools(toolUse("t3", "list_taps"), toolUse("t4", "get_tap")),
+                answers("should not be reached")
+            ),
+            tools = List(Fails(TenantInterceptor.UserStoreUnavailableBody))
+        )
+        val evs = h.run()
+        assert(h.modelCalls == 2)
+        assert(h.toolCalls.toList == List("list_pipelines", "get_pipeline", "list_taps"))
+        assertUserStoreStop(evs, "list_taps")
+    }
+
+    test("a failure of another kind between two user-store failures neither counts nor resets: the second ends the run") {
+        val h = new Harness(
+            model = List(
+                wantsTools(toolUse("t1", "list_pipelines")),
+                wantsTools(toolUse("t2", "get_pipeline")),
+                wantsTools(toolUse("t3", "list_taps")),
+                answers("should not be reached")
+            ),
+            tools = List(
+                Fails(TenantInterceptor.UserStoreUnavailableBody),
+                Fails("""{"error":"Pipeline not found"}"""),
+                Fails(TenantInterceptor.UserStoreUnavailableBody)
+            )
+        )
+        val evs = h.run()
+        assert(h.modelCalls == 3)
+        assert(h.toolCalls.toList == List("list_pipelines", "get_pipeline", "list_taps"))
+        assertUserStoreStop(evs, "list_taps")
+    }
+
+    test("a successful tool call in the same batch resets the user-store count") {
+        val h = new Harness(
+            model = List(
+                wantsTools(toolUse("t1", "list_pipelines")),
+                wantsTools(toolUse("t2", "get_pipeline"), toolUse("t3", "list_taps")),
+                wantsTools(toolUse("t4", "get_tap")),
+                answers("Done.")
+            ),
+            tools = List(
+                Fails(TenantInterceptor.UserStoreUnavailableBody),
+                Ok(okBody),
+                Fails(TenantInterceptor.UserStoreUnavailableBody),
+                Fails(TenantInterceptor.UserStoreUnavailableBody)
+            )
+        )
+        val evs = h.run()
+        // 1: failure (count 1); 2: success resets, failure (count 1); 3: failure (count 2) ends.
+        assert(h.modelCalls == 3)
+        assert(h.toolCalls.size == 4)
+        assertUserStoreStop(evs, "get_tap")
+    }
+
+    test("an unverified failure after a user-store failure ends the run with the unverified message") {
+        val h = new Harness(
+            model = List(wantsTools(toolUse("t1", "list_pipelines")), wantsTools(toolUse("t2", "get_pipeline"))),
+            tools = List(Fails(TenantInterceptor.UserStoreUnavailableBody), Fails(TenantInterceptor.UnverifiedUserBody))
+        )
+        val evs = h.run()
+        assert(h.modelCalls == 2)
+        assertEndsWithErrorResultThen(evs, "get_pipeline", UnverifiedSentence)
+    }
+
+    test("an unverified body re-serialised with other spacing is still recognised") {
+        val h = new Harness(
+            model = List(wantsTools(toolUse("t1", "list_pipelines")), answers("should not be reached")),
+            tools = List(Fails("""{"error": "The user this request acts for could not be verified", "errorKind": "acting_user_unverified"}"""))
+        )
+        val evs = h.run()
+        assert(h.modelCalls == 1)
+        assertEndsWithErrorResultThen(evs, "list_pipelines", UnverifiedSentence)
+    }
+
+    test("an unverified body inside a different tool's failure text, or not as the failure body, does not end the run") {
+        val h = new Harness(
+            model = List(wantsTools(toolUse("t1", "list_pipelines")), answers("It failed.")),
+            tools = List(Throws(new DatrisException("Tool proxy failed: " + TenantInterceptor.UnverifiedUserBody)))
+        )
+        val evs = h.run()
+        assert(h.modelCalls == 2)
+        assert(errors(evs).isEmpty, evs)
+        assert(evs.last == LoopEvent.Done)
+    }
+
+    test("FatalToolErrors.kindOf reads only the failure's own errorKind") {
+        def ex(name: String, body: String) = new DatrisException("MCP tool '" + name + "' returned error: " + body)
+        assert(FatalToolErrors.kindOf("a", ex("a", TenantInterceptor.UnverifiedUserBody)).contains(FatalToolErrors.UnverifiedUser))
+        assert(FatalToolErrors.kindOf("a", ex("a", TenantInterceptor.UserStoreUnavailableBody)).contains(FatalToolErrors.UserStoreUnavailable))
+        assert(FatalToolErrors.kindOf("b", ex("a", TenantInterceptor.UnverifiedUserBody)).isEmpty)
+        assert(FatalToolErrors.kindOf("a", ex("a", "(no detail)")).isEmpty)
+        assert(FatalToolErrors.kindOf("a", ex("a", """{"errorKind":"acting_user_unverified"}""")).isEmpty)
+        assert(FatalToolErrors.kindOf("a", ex("a", """{"error":"x","errorKind":"capability_denied"}""")).isEmpty)
+        assert(FatalToolErrors.kindOf("a", new RuntimeException("MCP tool 'a' returned error: " + TenantInterceptor.UnverifiedUserBody)).isEmpty)
     }
 
     test("a successful result whose data mentions the unverified errorKind does not end the run") {
