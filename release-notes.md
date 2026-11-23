@@ -1,28 +1,30 @@
 # Release Notes
 
-## v1.61.0 — November 22, 2026
+## v1.62.0 — November 23, 2026
 
-**Deletes that tell you what happened, columns that land under their own names, and firmer boundaries for scoped users and API keys.**
+**Hand a tap to a new owner, safer handling of tap script files, and tighter boundaries for limited users and API keys.**
 
-- **Delete and reset report what was left behind.** When a table, collection or set of files cannot be removed, the result names it and gives the reason, in the UI, the CLI and the MCP tools. The pipeline's configuration is still deleted. A store that does not answer no longer holds up the delete.
-- **Reset no longer re-ingests after a failed clear.** If a vector collection could not be cleared, the reset keeps its record of ingested documents, so nothing is loaded twice. Run the reset again once the store is available.
-- **Columns an AI transformation adds reach your database table.** A new column from a transformation is added to the table as text. If a table cannot take it, the run still succeeds, loads every other column, and shows a warning naming the column and the reason.
-- **Object-store files with a missing column.** A file that lacks a column of the pipeline's schema now loads with that column empty. Rows that lack an Iceberg merge key or a partition column are refused before anything is written, with a message naming the column, instead of duplicating rows or landing them in the wrong partition.
-- **Parquet and ORC queries return every column.** A query now returns every column the pipeline's files hold, including columns added after the first load.
-- **More column names load as they are.** On object stores, a column name with a dot, a space or a backtick loads under exactly that name. Saving a pipeline again keeps the column names its schema already has.
-- **Clearer refusals on save.** A table, schema, collection or column name a destination cannot hold, or a column type the platform does not know, is refused when you save, with a message naming it, instead of failing at load time.
-- **Read-only queries.** PostgreSQL queries from the query tools and from tap scripts are read-only and limited to five minutes each. MongoDB queries and listings cover your data and leave out the platform's own records.
-- **Restoring an earlier version is checked like a save.** A version that would not be accepted today is refused with the reason, and nothing is written. Restoring a deleted pipeline or tap needs permission to create one.
-- **API keys.** A limit the platform does not enforce can no longer be put on a new key, and the Keys page marks existing keys that carry one so you can replace them.
-- **Security hardening.** Several fixes tighten what scoped users and limited API keys can reach, in the API, the MCP tools and the chats. We recommend upgrading.
+- **Change a tap's owner.** An administrator can hand a tap to another user or API key without recreating it. The tap's schedule, history and versions are untouched.
+- **Deleting a tap only removes its own script.** A script file that another tap still uses, or that was placed by hand, is left in place and the result says so. Routine version cleanup follows the same rule.
+- **Storing a script never replaces another tap's file.** An upload, a storage move or a catalog restore that would overwrite a script another tap runs from is refused, and nothing is written.
+- **Approved agent actions run with the requester's access.** When an administrator approves an action an agent asked for, it runs with the access of whoever asked, not the approver's.
+- **Generating a schema needs permission to change the pipeline.** It is also recorded in the audit log, and it will not overwrite a schema that is already in use.
+- **Chats and agent tools follow the caller's access.** A chat ends when its user is removed. The MCP tool list shows what the key can use, and stays available through a brief outage.
+- **Recovery reverts keep the tap's current catalog, owner and enabled state.**
+- **Multi-tenant mode is retired.** The server will not start with it switched on, and says why.
+- **`datris doctor` has three new checks.** One flags the multi-tenant setting before you upgrade. Two list taps whose owner's access or script references need attention before a later release starts enforcing them.
+- **Security hardening.** Several fixes tighten sign-in sessions, approvals, script storage, and what limited users and API keys can read or change. We recommend upgrading, particularly if you keep tap scripts in a code repository.
 
-**Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. Nothing is migrated. Six things to check:
+**Upgrading:** update the CLI first (`pip install -U datris-mcp-server` or `brew upgrade datris`) and run `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. Nothing is migrated. Things to check:
 
-- **Object stores match columns by name.** If a pipeline relied on column order, for example a destination schema listed in a different order from the file, each value now lands under its own column name.
-- **Transformation columns appear in SQL tables.** If an AI transformation adds columns, expect them as new text columns after the next run. Earlier versions left them out without saying so.
-- **A missing merge key or partition column stops the whole run.** On a pipeline that writes to both a database and an object store, earlier versions still loaded the database. Now nothing loads until the file carries the column.
-- **pgvector pipelines must name their table.** A pipeline saved without a table name keeps loading into the table it already uses and shows a warning on each run until you set one.
-- **Limited API keys.** A key whose limit the platform never enforced no longer grants that access. Replace such keys with ones created in this version. The compose file carries a setting to keep the earlier behaviour while you replace them; refresh your `docker-compose.yml` if you want it.
-- **Tap scripts that query PostgreSQL.** A script that writes through the query route, or reads for more than five minutes in one query, needs changing: split a large read into several queries.
+- **Multi-tenant setting.** If your `.env` turns it on, remove it before upgrading. The server stops at startup otherwise and changes nothing.
+- **Going back to an earlier version signs everyone out.** Stop the old server before starting the new one.
+- **Agent approvals.** If the user or key that requested an action has since been removed, approving it fails.
+- **Read-only and reporting keys can no longer generate a schema.** Use a key that can update the pipeline.
+- **Limited API keys and catalog changes.** Renaming a catalog, or moving a pipeline or tap out of one, is refused when the key's access does not cover where it would end up.
+- **Limited users and keys, tap scripts in a code repository.** They can no longer store a script for a tap whose file was placed by hand or is shared with another tap. An administrator can give the tap its own file. `datris doctor` lists the taps affected.
+- **Changed your repository's path prefix in the past?** Record the earlier prefix in the code repository settings, or taps stored under it are treated as hand-placed.
+- **`datris doctor` in scripts.** The two new tap checks are warnings. If either lists a tap, a full run exits non-zero.
+- **Tap deletes can return a warning.** If your automation treats any warning as a failure, check for the "script file was left in place" message.
 
-Agents using the published skill get the scoped-key guidance with skill 1.7.13. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
+Agents using the published skill get the updated guidance with skill 1.7.15.
