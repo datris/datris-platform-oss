@@ -92,9 +92,9 @@ object TapConfigIO {
             )
         )
 
-        // Retention cap: prune old snapshots and GC their now-unreferenced scripts.
-        EntityVersionIO.prune(versionTable, tapConfig.name, env.versionCap)
-            .foreach(TapScriptGenerator.deleteScript)
+        // Retention cap: prune old snapshots and GC their now-unreferenced
+        // scripts (only keys under the tap script folder).
+        TapScriptGenerator.deleteTapScripts(tapConfig.name, EntityVersionIO.prune(versionTable, tapConfig.name, env.versionCap))
 
         versioned
     }

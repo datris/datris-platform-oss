@@ -47,12 +47,11 @@ object TapReferenceScan {
     private def placeholder(t: TapConfig): Boolean = CatalogOps.Placeholder.is(t.name)
 
     /** The script a tap runs, as comparable keys: a built-in key as stored;
-      * a repository path normalised and by its local cache name, so two taps
-      * on one file, or on two paths the cache stores under one name, share
-      * a key ([[TapReferenceRules.sameRepoScript]]). */
+      * a repository path normalised, so two taps on one file share a key
+      * ([[TapReferenceRules.sameRepoScript]]). */
     private def scriptKeys(t: TapConfig): Seq[String] =
         TapReferenceRules.effectiveBuiltIn(t).map(p => Seq("builtin:" + p)).orElse {
-            TapReferenceRules.effectiveRepo(t).map(p => Seq("repo:" + TapReferenceRules.normalizedRef(p), "repo-cache:" + TapReferenceRules.cacheName(p)))
+            TapReferenceRules.effectiveRepo(t).map(p => Seq("repo:" + TapReferenceRules.normalizedRef(p)))
         }.getOrElse(Nil)
 
     /** The groups of `taps` that run one script: taps sharing any key of

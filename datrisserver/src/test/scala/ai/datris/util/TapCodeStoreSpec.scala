@@ -126,11 +126,11 @@ class TapCodeStoreSpec extends AnyFunSuite {
         )
     }
 
-    private val NotCommitIds = Seq("main", "release/1", "/abs", "..", "../abc1234", "abc1234/..", "./abc1234", "abc1234/x", "abc12", "g123456", "")
+    private val OtherCommitValues = Seq("main", "release/1", "/abs", "..", "../abc1234", "abc1234/..", "./abc1234", "abc1234/x", "abc12", "g123456", "")
 
     test("the script cache accepts only a commit id as its folder name: any other value is a miss on get and writes nothing on put") {
         withCacheDir { dir =>
-            for (sha <- NotCommitIds) {
+            for (sha <- OtherCommitValues) {
                 assert(!TapScriptCache.isCommitId(sha), sha)
                 TapScriptCache.put("o/r", sha, "taps/x.py", "print(1)")
                 assert(TapScriptCache.get("o/r", sha, "taps/x.py").isEmpty, sha)
@@ -146,7 +146,7 @@ class TapCodeStoreSpec extends AnyFunSuite {
 
     test("a repository read with a commit value that is not a commit id goes to the repository every time and caches nothing") {
         withCacheDir { dir =>
-            for (sha <- NotCommitIds.filter(_.nonEmpty)) {
+            for (sha <- OtherCommitValues.filter(_.nonEmpty)) {
                 val repo = new CountingRepo()
                 val ref = ScriptRef("orders", "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = sha)
                 assert(repo.store.readScript(ref).contains("print('from the repository')"), sha)
@@ -173,31 +173,96 @@ class TapCodeStoreSpec extends AnyFunSuite {
         }
     }
 
-    test("cache files written by v1.61.0 are still found: <root>/<uuid of repo>/<commit id>/<path with / as _>") {
+    private val Sha40 = "0123456789abcdef0123456789abcdef01234567"
+
+    private def repoDirOf(dir: java.nio.file.Path, repo: String): java.nio.file.Path =
+        dir.resolve(java.util.UUID.nameUUIDFromBytes(repo.getBytes("UTF-8")).toString)
+
+    private def sha256Hex(s: String): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(s.getBytes("UTF-8")).map(b => "%02x".format(b & 0xff)).mkString
+
+    test("a local copy is named by the SHA-256 of the exact repository path, plus its extension, under <root>/<uuid of repo>/<commit id>/") {
         withCacheDir { dir =>
-            val sha = "0123456789abcdef0123456789abcdef01234567"
-            val repoDir = dir.resolve(java.util.UUID.nameUUIDFromBytes("acme/scripts".getBytes("UTF-8")).toString)
-            Files.createDirectories(repoDir.resolve(sha))
-            Files.write(repoDir.resolve(sha).resolve("taps_orders.py"), "print('cached by v1.61.0')".getBytes("UTF-8"))
-            val repo = new CountingRepo()
-            val ref = ScriptRef("orders", "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = sha)
-            assert(repo.store.readScript(ref).contains("print('cached by v1.61.0')"))
-            assert(repo.reads.get == 0, "served from the existing cache file")
-            // and a write lands where v1.61.0 put it
+            assert(TapScriptCache.fileName("taps/orders.py") == sha256Hex("taps/orders.py") + ".py")
+            assert(TapScriptCache.fileName("taps/Makefile") == sha256Hex("taps/Makefile"))
+            assert(TapScriptCache.fileName("taps/.py") == sha256Hex("taps/.py"))
+            assert(TapScriptCache.fileName(null) == null)
             TapScriptCache.put("acme/scripts", "abcdef1", "taps/sub/x.py", "print(2)")
-            assert(Files.isRegularFile(repoDir.resolve("abcdef1").resolve("taps_sub_x.py")))
+            val expected = repoDirOf(dir, "acme/scripts").resolve("abcdef1").resolve(sha256Hex("taps/sub/x.py") + ".py")
+            assert(Files.isRegularFile(expected), filesUnder(dir).toString)
+            assert(filesUnder(dir) == List(expected))
+        }
+    }
+
+    /** Pairs of different repository paths that differ only in a separator, case or form. */
+    private val DifferentPaths = Seq(
+        "taps/a/b.py" -> "taps/a_b.py",
+        "taps/x/y/z.py" -> "taps/x_y/z.py",
+        "taps/Orders.py" -> "taps/orders.py",
+        "taps/caf\u00e9.py" -> "taps/cafe\u0301.py",
+        ("taps/" + "n" * 300 + ".py") -> ("taps/" + "n" * 299 + "_.py")
+    )
+
+    test("two different repository paths have two local copies, and each read returns its own content") {
+        withCacheDir { dir =>
+            for (((a, b), i) <- DifferentPaths.zipWithIndex) {
+                val sha = "abcdef" + i
+                assert(TapScriptCache.fileName(a) != TapScriptCache.fileName(b), a + " / " + b)
+                TapScriptCache.put("acme/scripts", sha, a, "print('a')")
+                TapScriptCache.put("acme/scripts", sha, b, "print('b')")
+                assert(TapScriptCache.get("acme/scripts", sha, a).contains("print('a')"), a)
+                assert(TapScriptCache.get("acme/scripts", sha, b).contains("print('b')"), b)
+            }
+            assert(filesUnder(dir).size == DifferentPaths.size * 2, filesUnder(dir).toString)
+            // through the store: each path is read from the repository once, then served locally with its own content
+            val contents = Map("taps/a/b.py" -> "print('first')", "taps/a_b.py" -> "print('second')")
+            val reads = new java.util.concurrent.atomic.AtomicInteger(0)
+            val store = new GithubScriptStore(
+                n => ScriptFamily.Tap(n),
+                null,
+                () => Some(CodeRepoConfig(repo = "acme/other", branch = "main", pathPrefix = "taps/")),
+                _ => Sha40,
+                (_, path, ref) => { reads.incrementAndGet(); contents.get(path).map(c => RepoFile(c, "blob", ref)) }
+            )
+            for (_ <- 1 to 2; (path, content) <- contents) {
+                val ref = ScriptRef("t", "github", scriptRepoPath = path, scriptCommitSha = Sha40)
+                assert(store.readScript(ref).contains(content), path)
+            }
+            assert(reads.get == 2, "one repository read per path: " + reads.get)
+        }
+    }
+
+    test("a local copy under any other file name is not used: the script is read from the repository once, then served locally") {
+        withCacheDir { dir =>
+            val commitDir = repoDirOf(dir, "acme/scripts").resolve(Sha40)
+            Files.createDirectories(commitDir)
+            Files.write(commitDir.resolve("taps_orders.py"), "print('other file')".getBytes("UTF-8"))
+            val repo = new CountingRepo()
+            val ref = ScriptRef("orders", "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = Sha40)
+            assert(repo.store.readScript(ref).contains("print('from the repository')"))
+            assert(repo.store.readScript(ref).contains("print('from the repository')"))
+            assert(repo.reads.get == 1, "read from the repository once: " + repo.reads.get)
+            assert(Files.isRegularFile(commitDir.resolve(TapScriptCache.fileName("taps/orders.py"))))
         }
     }
 
     test("the script cache reads and writes only a file directly inside a commit folder of its directory") {
         withCacheDir { dir =>
             val sha = "abc1234"
-            for (path <- Seq("..", ".", "")) {
-                TapScriptCache.put("o/r", sha, path, "print(1)")
-                assert(TapScriptCache.get("o/r", sha, path).isEmpty, "'" + path + "'")
-                assert(TapScriptCache.location("o/r", sha, path).isEmpty, "'" + path + "'")
-            }
+            TapScriptCache.put("o/r", sha, "", "print(1)")
+            assert(TapScriptCache.get("o/r", sha, "").isEmpty)
+            assert(TapScriptCache.location("o/r", sha, "").isEmpty)
+            assert(TapScriptCache.location("o/r", sha, null).isEmpty)
             assert(filesUnder(dir).isEmpty, filesUnder(dir).toString)
+            // any other path, however written, is one hexadecimal file directly inside the commit folder
+            val commitDir = repoDirOf(dir, "o/r").resolve(sha)
+            for (path <- Seq("..", ".", "/", "../../x.py", "taps/../../x.py", "a/b/c.py")) {
+                val loc = TapScriptCache.location("o/r", sha, path)
+                assert(loc.exists(p => p.getParent == commitDir && p.getFileName.toString.matches("[0-9a-f]{64}(\\.py)?")), path + " -> " + loc)
+                TapScriptCache.put("o/r", sha, path, "print('" + path + "')")
+                assert(TapScriptCache.get("o/r", sha, path).contains("print('" + path + "')"), path)
+            }
+            assert(filesUnder(dir).forall(_.getParent == commitDir), filesUnder(dir).toString)
             // the containment check on its own, whatever the commit value
             val root = dir
             assert(TapScriptCache.inside(root, root.resolve("r").resolve("c").resolve("f.py")))
@@ -210,7 +275,7 @@ class TapCodeStoreSpec extends AnyFunSuite {
         }
     }
 
-    test("the contents URL of a repository path always names a file inside the repository's contents") {
+    test("a read's contents URL names a file inside the repository's contents, however the path is written") {
         val cfg = CodeRepoConfig(repo = "o/r", authSecretName = "s")
         val base = "https://api.github.com/repos/o/r/contents/"
         assert(GithubClient.contentsUrl(cfg, "taps/x.py") == base + "taps/x.py")
@@ -220,6 +285,159 @@ class TapCodeStoreSpec extends AnyFunSuite {
         for (p <- Seq("../x.py", "taps/../../x.py", "../../../x.py")) {
             val url = GithubClient.contentsUrl(cfg, p)
             assert(url == base + "x.py", p + " -> " + url)
+        }
+    }
+
+    // --- code repository writes and deletes ---------------------------------
+
+    /** (configured prefix, path, contents URL) for ordinary names and paths:
+      * the URLs every operation sent before this change. */
+    private val OrdinaryUrls: Seq[(String, String, String)] = Seq(
+        ("taps/", "taps/orders.py", "https://api.github.com/repos/o/r/contents/taps/orders.py"),
+        ("taps", "taps/orders.py", "https://api.github.com/repos/o/r/contents/taps/orders.py"),
+        ("", "orders.py", "https://api.github.com/repos/o/r/contents/orders.py"),
+        (null, "orders.py", "https://api.github.com/repos/o/r/contents/orders.py"),
+        ("infra/datris/", "infra/datris/sales.orders.py", "https://api.github.com/repos/o/r/contents/infra/datris/sales.orders.py"),
+        ("taps/", "taps/a/b.py", "https://api.github.com/repos/o/r/contents/taps/a/b.py"),
+        ("taps/", "taps/a b.py", "https://api.github.com/repos/o/r/contents/taps/a%20b.py"),
+        ("taps/", "taps/50%-off.py", "https://api.github.com/repos/o/r/contents/taps/50%25-off.py"),
+        ("taps/", "taps/a+b.py", "https://api.github.com/repos/o/r/contents/taps/a%2Bb.py"),
+        ("taps/", "taps/caf\u00e9.py", "https://api.github.com/repos/o/r/contents/taps/caf%C3%A9.py"),
+        ("taps/", "taps/...py", "https://api.github.com/repos/o/r/contents/taps/...py"),
+        ("taps/", "taps/x/...py", "https://api.github.com/repos/o/r/contents/taps/x/...py"),
+        ("taps/", "taps/pipelines.py", "https://api.github.com/repos/o/r/contents/taps/pipelines.py"),
+        ("taps/", "taps/pipelines/orders/transformation.py", "https://api.github.com/repos/o/r/contents/taps/pipelines/orders/transformation.py"),
+        ("taps/", "other/orders.py", "https://api.github.com/repos/o/r/contents/other/orders.py"),
+        ("/taps/", "/taps/orders.py", "https://api.github.com/repos/o/r/contents/taps/orders.py"),
+        ("org//taps/", "org//taps/orders.py", "https://api.github.com/repos/o/r/contents/org/taps/orders.py")
+    )
+
+    /** Paths whose part after the configured prefix has an empty, `.` or `..` segment. */
+    private val RefusedChanges: Seq[(String, String)] = Seq(
+        "taps/" -> "taps/../orders.py",
+        "taps/" -> "taps/./orders.py",
+        "taps/" -> "taps//orders.py",
+        "taps/" -> "taps/a/../../b.py",
+        "taps/" -> "taps/orders.py/",
+        "taps/" -> "taps/a/./b.py",
+        "taps/" -> "/orders.py",
+        "" -> "../orders.py",
+        "" -> "./orders.py",
+        "" -> "a//b.py",
+        "taps/" -> ".."
+    )
+
+    /** A fake transport for [[GithubClient]] that records every request. */
+    private class FakeTransport {
+        val sent = mutable.Buffer[(String, String)]()
+        def install(): Unit =
+            GithubClient.transport = (request, _) =>
+                sent.synchronized {
+                    sent += (request.getMethod -> request.getURI.toString)
+                    request.getMethod match {
+                        case "GET" => (200, "{\"content\": \"cHJpbnQoMSk=\", \"sha\": \"blob1\"}")
+                        case _ => (200, "{\"commit\": {\"sha\": \"" + Sha40 + "\"}}")
+                    }
+                }
+    }
+
+    private def withTransport[T](f: FakeTransport => T): T = {
+        val saved = GithubClient.transport
+        val t = new FakeTransport
+        t.install()
+        try f(t)
+        finally GithubClient.transport = saved
+    }
+
+    private def repoCfg(prefix: String): CodeRepoConfig = CodeRepoConfig(repo = "o/r", authSecretName = "s", branch = "main", pathPrefix = prefix)
+
+    test("ordinary names and paths: reads, writes and deletes use the same contents URLs as before") {
+        for ((prefix, path, url) <- OrdinaryUrls) {
+            val cfg = repoCfg(prefix)
+            assert(GithubClient.contentsUrl(cfg, path) == url, path)
+            // the URL as built before this change: empty segments dropped, each segment encoded
+            val before = "https://api.github.com/repos/o/r/contents/" +
+                path.split("/").filter(_.nonEmpty).map(seg => java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")).mkString("/")
+            assert(before == url, path)
+            withTransport { t =>
+                assert(GithubClient.putFile(cfg, path, "print(1)", "m", null) == Sha40)
+                GithubClient.deleteFile(cfg, path, "m")
+                assert(t.sent.map(_._1).toList == List("GET", "PUT", "GET", "DELETE"), path + ": " + t.sent)
+                assert(t.sent.map(_._2).map(_.takeWhile(_ != '?')).forall(_ == url), path + ": " + t.sent)
+            }
+        }
+    }
+
+    test("a write or delete whose path has an empty, '.' or '..' segment after the configured prefix is refused and sends nothing") {
+        for ((prefix, path) <- RefusedChanges) {
+            val cfg = repoCfg(prefix)
+            withTransport { t =>
+                val put = intercept[ai.datris.model.ValidationException](GithubClient.putFile(cfg, path, "print(1)", "m", null))
+                val del = intercept[ai.datris.model.ValidationException](GithubClient.deleteFile(cfg, path, "m"))
+                assert(t.sent.isEmpty, path + ": " + t.sent)
+                assert(put.getMessage == del.getMessage)
+                assert(!put.getMessage.contains(path) || path == "..", put.getMessage)
+                assert(ai.datris.api.ApiErrors.classify(put)._1 == 400)
+            }
+        }
+    }
+
+    test("a configured prefix with empty or dot segments is the operator's setting: the path the store writes under it is written") {
+        for (prefix <- Seq("/taps", "//taps/", "taps//", "./taps/", "org//taps/", "/", "./", "a/../taps/")) {
+            val cfg = repoCfg(prefix)
+            val path = GithubCodeStore.scriptRepoPath("orders", cfg)
+            assert(GithubClient.changeRefusal(cfg, path).isEmpty, prefix + " " + path)
+            withTransport { t =>
+                GithubClient.putFile(cfg, path, "print(1)", "m", null)
+                GithubClient.deleteFile(cfg, path, "m")
+                assert(t.sent.size == 4, prefix + ": " + t.sent)
+                // every request names one file, the one the read checks
+                assert(t.sent.map(_._2.takeWhile(_ != '?')).distinct.size == 1, prefix + ": " + t.sent)
+            }
+        }
+    }
+
+    /** Tap names whose script path would have an empty, `.` or `..` segment. */
+    private val RefusedTapNames = Seq("../orders", "./orders", "a//b", "/orders", "a/./b", "a/../b", "a/../../b")
+
+    /** Tap names that keep working: separators, dots inside a segment, a trailing separator, and names that only start like the pipelines folder. */
+    private val AcceptedTapNames = Seq("orders", "a/b", "sales.orders", "..", "x/..", "a/", "...", "pipelines", "pipelines-x", "pipelines_x", "Pipelines/x")
+
+    test("the repository path of a tap refuses a name with an empty, '.' or '..' segment, or under the pipelines folder, with a 400") {
+        for (prefix <- Seq("taps/", "", "./taps/"); name <- RefusedTapNames :+ "pipelines/orders") {
+            val e = intercept[ai.datris.model.ValidationException](GithubCodeStore.scriptRepoPath(name, repoCfg(prefix)))
+            assert(ai.datris.api.ApiErrors.classify(e)._1 == 400, name)
+            intercept[ai.datris.model.ValidationException](GithubCodeStore.scriptRepoPath(ScriptFamily.Tap(name), repoCfg(prefix)))
+        }
+        for (name <- AcceptedTapNames)
+            assert(GithubCodeStore.scriptRepoPath(name, repoCfg("taps/")) == "taps/" + name + ".py", name)
+        // a pipeline's own script path is unchanged
+        assert(GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "transformation"), repoCfg("taps/")) == "taps/pipelines/orders/transformation.py")
+    }
+
+    test("storing a tap script in the repository under a refused name sends nothing; an accepted name writes <prefix><name>.py") {
+        val cfg = repoCfg("taps/")
+        val store = new GithubScriptStore(n => ScriptFamily.Tap(n), null, () => Some(cfg), _ => Sha40, (_, _, _) => None)
+        withCacheDir { _ =>
+            for (name <- RefusedTapNames :+ "pipelines/orders")
+                withTransport { t =>
+                    intercept[ai.datris.model.ValidationException](store.storeScript(name, "print(1)", null, "todd"))
+                    intercept[ai.datris.model.ValidationException](store.repoPathFor(name))
+                    assert(t.sent.isEmpty, name + ": " + t.sent)
+                }
+            for (name <- AcceptedTapNames)
+                withTransport { t =>
+                    val stored = store.storeScript(name, "print(1)", null, "todd")
+                    assert(stored.scriptRepoPath == "taps/" + name + ".py" && stored.scriptCommitSha == Sha40, name)
+                    assert(t.sent.map(_._1).toList == List("GET", "PUT"), name + ": " + t.sent)
+                }
+            // a stored reference with such a segment after the prefix is not written or deleted either
+            withTransport { t =>
+                val prior = ScriptRef("orders", "github", scriptRepoPath = "taps/../orders.py", scriptCommitSha = Sha40)
+                intercept[ai.datris.model.ValidationException](store.storeScript("orders", "print(1)", prior, "todd"))
+                intercept[ai.datris.model.ValidationException](store.deleteScript(prior))
+                assert(t.sent.isEmpty, t.sent.toString)
+            }
         }
     }
 
@@ -292,6 +510,96 @@ class TapCodeStoreSpec extends AnyFunSuite {
             store.deleteScript(ref)
             assert(store.readScript(ref).isEmpty)
             assert(!store.scriptExists(ref))
+        } finally TenantContext.clear()
+    }
+
+    // --- the built-in tap script store ---------------------------------------
+
+    private def withInfoLog[T](f: => T): (T, List[String]) = {
+        val names = Seq(classOf[MinioScriptStore].getName, TapScriptGenerator.getClass.getName)
+        val loggers = names.map(n => org.slf4j.LoggerFactory.getLogger(n).asInstanceOf[ch.qos.logback.classic.Logger])
+        val appender = new ch.qos.logback.core.read.ListAppender[ch.qos.logback.classic.spi.ILoggingEvent]
+        appender.start()
+        val levels = loggers.map(_.getLevel)
+        loggers.foreach { l => l.addAppender(appender); l.setLevel(ch.qos.logback.classic.Level.INFO) }
+        try {
+            val out = f
+            import scala.collection.JavaConverters._
+            (out, appender.list.asScala.filter(_.getLevel == ch.qos.logback.classic.Level.INFO).map(_.getFormattedMessage).toList)
+        } finally loggers.zip(levels).foreach { case (l, lv) => l.detachAppender(appender); l.setLevel(lv) }
+    }
+
+    test("the built-in tap store deletes a key under tap-scripts/ and leaves any other stored reference in place, logging the tap's name only") {
+        TenantContext.set(SpecEnv.testEnv)
+        try {
+            val objects = new MemObjects
+            val bucket = SpecEnv.testEnv.environment + "-config"
+            val store = MinioCodeStore.tapStore(objects)
+            val own = store.storeScript("orders", "print('own')", null, "todd")
+            assert(own.scriptPath.startsWith("tap-scripts/orders_"), own.scriptPath)
+            objects.objects((bucket, "uploads/data.csv")) = "a,b"
+            objects.objects((bucket, "pipeline-scripts/p/transformation_1.py")) = "print(2)"
+
+            val (_, keptLog) = withInfoLog {
+                store.deleteScript(ScriptRef("elsewhere", "minio", scriptPath = "uploads/data.csv"))
+                store.deleteScript(ScriptRef("elsewhere", "minio", scriptPath = "pipeline-scripts/p/transformation_1.py"))
+            }
+            assert(objects.objects.contains((bucket, "uploads/data.csv")))
+            assert(objects.objects.contains((bucket, "pipeline-scripts/p/transformation_1.py")))
+            assert(
+                keptLog.size == 2 && keptLog.forall(l => l.contains("'elsewhere'") && !l.contains("uploads") && !l.contains("pipeline-scripts")),
+                keptLog.toString
+            )
+
+            assert(store.deleteUnlessEdited(ScriptRef("orders", "minio", scriptPath = own.scriptPath)).isEmpty)
+            assert(!objects.objects.contains((bucket, own.scriptPath)), "the tap's own script is deleted as before")
+        } finally TenantContext.clear()
+    }
+
+    test("tap version cleanup deletes only keys under tap-scripts/; any other reference is left in place with one INFO line naming the tap") {
+        TenantContext.set(SpecEnv.testEnv)
+        try {
+            val objects = new MemObjects
+            val bucket = SpecEnv.testEnv.environment + "-config"
+            Seq("tap-scripts/orders_1.py", "tap-scripts/orders_2.py", "uploads/data.csv", "pipeline-scripts/p/x_1.py").foreach(k =>
+                objects.objects((bucket, k)) = "x"
+            )
+            val (_, log) = withInfoLog {
+                TapScriptGenerator.deleteTapScripts(
+                    "orders",
+                    Seq("tap-scripts/orders_1.py", "uploads/data.csv", "tap-scripts/orders_2.py", "pipeline-scripts/p/x_1.py", null, ""),
+                    objects = objects
+                )
+            }
+            assert(objects.objects.keys.map(_._2).toSet == Set("uploads/data.csv", "pipeline-scripts/p/x_1.py"), objects.objects.keys.toString)
+            assert(log.size == 1 && log.head.contains("'orders'") && !log.head.contains("uploads") && !log.head.contains("pipeline-scripts"), log.toString)
+            // nothing outside: no line; an outside reference already reported by the store delete: no second line
+            val (_, quiet) = withInfoLog {
+                TapScriptGenerator.deleteTapScripts("orders", Seq("tap-scripts/orders_3.py"), objects = objects)
+                TapScriptGenerator.deleteTapScripts("orders", Seq("uploads/data.csv"), alreadyReported = Set("uploads/data.csv"), objects = objects)
+            }
+            assert(quiet.isEmpty, quiet.toString)
+            assert(objects.objects.contains((bucket, "uploads/data.csv")))
+        } finally TenantContext.clear()
+    }
+
+    test("the built-in tap store keeps names with a separator working, and refuses an empty, '.' or '..' segment before writing") {
+        TenantContext.set(SpecEnv.testEnv)
+        try {
+            val objects = new MemObjects
+            val store = MinioCodeStore.tapStore(objects)
+            for (name <- Seq("a/b", "sales.orders", "..", "x/..", "a/", "pipelines/x")) {
+                val stored = store.storeScript(name, "print(1)", null, "todd")
+                assert(stored.scriptPath.startsWith("tap-scripts/" + name + "_") && stored.scriptPath.endsWith(".py"), stored.scriptPath)
+                assert(store.readScript(ScriptRef(name, "minio", scriptPath = stored.scriptPath)).contains("print(1)"), name)
+            }
+            val before = objects.objects.size
+            for (name <- RefusedTapNames) {
+                val e = intercept[ai.datris.model.ValidationException](store.storeScript(name, "print(1)", null, "todd"))
+                assert(ai.datris.api.ApiErrors.classify(e)._1 == 400, name)
+            }
+            assert(objects.objects.size == before, "nothing written")
+            assert(objects.objects.keys.forall(_._2.startsWith("tap-scripts/")))
         } finally TenantContext.clear()
     }
 

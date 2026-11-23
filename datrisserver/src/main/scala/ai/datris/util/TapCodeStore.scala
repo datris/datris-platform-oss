@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{CodeRepoConfig, DatrisEnvironment, DatrisException, TapConfig}
+import ai.datris.model.{CodeRepoConfig, DatrisEnvironment, DatrisException, TapConfig, ValidationException}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.charset.StandardCharsets
@@ -234,11 +234,33 @@ object TapCodeStore {
     }
 }
 
+/** Path checks shared by the script stores. */
+object ScriptPaths {
+
+    /** The repository folder of pipeline CodeGen scripts, under the path prefix. */
+    val PipelinesFolder = "pipelines/"
+
+    /** True when every `/`-separated segment of `p` (trailing empties kept)
+      * is non-empty and neither `.` nor `..`. */
+    def plainSegments(p: String): Boolean =
+        p != null && p.nonEmpty && p.split("/", -1).forall(seg => seg.nonEmpty && seg != "." && seg != "..")
+
+    /** Some(message) when a script stored for the tap `name` would get a path
+      * with an empty, `.` or `..` segment after the store's prefix. Both
+      * stores append to the name's last segment (`.py`, `_<id>.py`), so that
+      * is the case exactly when `name + ".py"` has such a segment. */
+    def tapNameRefusal(name: String): Option[String] =
+        if (name == null || name.isEmpty || plainSegments(name + ".py")) None
+        else Some("Invalid tap name for script storage: a tap name may not contain an empty, '.' or '..' path segment.")
+}
+
 /** Built-in backend: `{env}-config` bucket, `{keyPrefix}{name}_{uuid}.py`.
   * Delegates to the TapScriptGenerator helpers so tap behavior (including
-  * keep-old-script-for-revert) is unchanged. `guardDeletes` refuses to
-  * delete a path outside `keyPrefix`. */
+  * keep-old-script-for-revert) is unchanged. A name whose key would have an
+  * empty, `.` or `..` segment after `keyPrefix` is refused before anything
+  * is written. `guardDeletes` leaves a path outside `keyPrefix` in place. */
 class MinioScriptStore(keyPrefix: String, objects: ObjectStoreUtility = null, guardDeletes: Boolean = false) extends CodeStore {
+    private val logger: Logger = LoggerFactory.getLogger(getClass)
     val storage = "minio"
 
     private def store: ObjectStoreUtility = Option(objects).getOrElse(ObjectStoreUtil)
@@ -248,12 +270,17 @@ class MinioScriptStore(keyPrefix: String, objects: ObjectStoreUtility = null, gu
         else store.readBucketObject(DatrisEnvironment.current.environment + "-config", ref.scriptPath)
 
     override def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript = {
+        ScriptPaths.tapNameRefusal(name).foreach(m => throw new ValidationException(m))
         val oldPath = if (prior != null) prior.scriptPath else null
         StoredScript(storage, scriptPath = TapScriptGenerator.storeScript(name, script, oldPath, keyPrefix, objects))
     }
 
     override def deleteScript(ref: ScriptRef): Unit =
-        if (ref != null) TapScriptGenerator.deleteScriptUnder(ref.scriptPath, if (guardDeletes) keyPrefix else null, objects)
+        if (ref != null && ref.scriptPath != null) {
+            if (guardDeletes && !ref.scriptPath.startsWith(keyPrefix))
+                logger.info("Script of '" + LogSafe.text(ref.name) + "' left in place: its stored reference is outside this store's folder")
+            else TapScriptGenerator.deleteScriptUnder(ref.scriptPath, if (guardDeletes) keyPrefix else null, objects)
+        }
 
     override def scriptExists(ref: ScriptRef): Boolean = readScript(ref).isDefined
 }
@@ -264,7 +291,11 @@ object MinioCodeStore extends TapCodeStore {
     val TapPrefix = "tap-scripts/"
     val PipelinePrefix = "pipeline-scripts/"
 
-    protected val underlying: CodeStore = new MinioScriptStore(TapPrefix)
+    protected val underlying: CodeStore = tapStore(null)
+
+    /** The built-in tap script store over `objects` (null: the platform's
+      * object store). Deletes only keys under [[TapPrefix]]. */
+    private[util] def tapStore(objects: ObjectStoreUtility): CodeStore = new MinioScriptStore(TapPrefix, objects, guardDeletes = true)
 
     /** Built-in store for one pipeline's CodeGen scripts, keys under `pipeline-scripts/<pipeline>/`. */
     def forPipeline(pipeline: String, objects: ObjectStoreUtility = null): CodeStore = {
@@ -430,8 +461,17 @@ object GithubCodeStore extends TapCodeStore {
         if (prefix.isEmpty || prefix.endsWith("/")) prefix else prefix + "/"
     }
 
-    def scriptRepoPath(tapName: String, cfg: CodeRepoConfig): String =
+    /** `<prefix><tap>.py`. Refuses (a [[ValidationException]], answered as
+      * 400) a tap name whose path would have an empty, `.` or `..` segment
+      * after the prefix, or would be under the `pipelines/` folder. */
+    def scriptRepoPath(tapName: String, cfg: CodeRepoConfig): String = {
+        ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
+        if (tapName.startsWith(ScriptPaths.PipelinesFolder))
+            throw new ValidationException(
+                "Invalid tap name for repository storage: a tap script may not be stored under the '" + ScriptPaths.PipelinesFolder + "' folder."
+            )
         normalizedPrefix(cfg) + tapName + ".py"
+    }
 
     /** `<prefix><tap>.py` for a tap; `<prefix>pipelines/<pipeline>/data-quality.py`
       * or `.../transformation.py` for a pipeline CodeGen script. */
@@ -487,27 +527,39 @@ object GithubCodeStore extends TapCodeStore {
   * forever, bounded by pruning old sha directories per repo. Lives under the
   * datris home dir so it survives restarts but not image rebuilds.
   *
-  * Layout (unchanged since v1.61.0): `<root>/<uuid of repo>/<commit id>/<file
-  * name>`, the file name being the repository path with every `/` replaced
-  * by `_` ([[fileName]]). Only a commit id (7 to 64 hexadecimal characters)
-  * is used as a folder name: for any other value [[get]] is a miss and
-  * [[put]] writes nothing, so the read goes to the repository as on a cold
-  * cache. Independently of that, a location that does not resolve to a file
-  * directly inside a commit folder of the cache directory is never read or
-  * written. */
+  * Layout: `<root>/<uuid of repo>/<commit id>/<file name>`, the file name
+  * being the SHA-256 of the exact repository path in hexadecimal, plus the
+  * path's extension ([[fileName]]): one file per repository path. Only a
+  * commit id (7 to 64 hexadecimal characters) is used as a folder name: for
+  * any other value [[get]] is a miss and [[put]] writes nothing, so the read
+  * goes to the repository as on a cold cache. Independently of that, a
+  * location that does not resolve to a file directly inside a commit folder
+  * of the cache directory is never read or written. */
 object TapScriptCache {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
     private val MaxShasPerRepo = 50
 
     private val CommitIdPattern = java.util.regex.Pattern.compile("[0-9a-fA-F]{7,64}")
 
+    private val ExtensionPattern = java.util.regex.Pattern.compile("\\.[A-Za-z0-9]{1,16}$")
+
     /** True when `sha` is a hexadecimal commit id of 7 to 64 characters. */
     def isCommitId(sha: String): Boolean = sha != null && CommitIdPattern.matcher(sha).matches()
 
-    /** The file name a repository path is cached under: every `/` replaced
-      * by `_`. Two paths with the same file name are one cache entry, so the
-      * script reference rules treat them as the same script. Null for null. */
-    def fileName(path: String): String = if (path == null) null else path.replace('/', '_')
+    /** The file name a repository path is cached under: the SHA-256 of the
+      * exact path (UTF-8) in lowercase hexadecimal, followed by the
+      * extension of the path's last segment (`.py`), if it has one. Distinct
+      * paths have distinct file names. Null for null. */
+    def fileName(path: String): String =
+        if (path == null) null
+        else {
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(path.getBytes(StandardCharsets.UTF_8))
+            val hex = digest.map(b => "%02x".format(b & 0xff)).mkString
+            val last = path.substring(path.lastIndexOf('/') + 1)
+            val m = ExtensionPattern.matcher(last)
+            val ext = if (last.length > 1 && m.find() && m.start() > 0) m.group() else ""
+            hex + ext
+        }
 
     private def cacheRoot: Path =
         Paths.get(
@@ -562,12 +614,19 @@ object TapScriptCache {
     private def prune(repo: String): Unit = {
         val dir = repoDir(cacheRoot, repo)
         if (!Files.isDirectory(dir)) return
-        val shaDirs = Files.list(dir).toArray.map(_.asInstanceOf[Path]).filter(Files.isDirectory(_))
+        val listing = Files.list(dir)
+        val shaDirs =
+            try listing.toArray.map(_.asInstanceOf[Path]).filter(Files.isDirectory(_))
+            finally listing.close()
         if (shaDirs.length > MaxShasPerRepo) {
             shaDirs.sortBy(p => Files.getLastModifiedTime(p).toMillis)
                 .take(shaDirs.length - MaxShasPerRepo)
                 .foreach { old =>
-                    Files.walk(old).toArray.map(_.asInstanceOf[Path]).sortBy(-_.getNameCount).foreach(Files.deleteIfExists(_))
+                    val walk = Files.walk(old)
+                    val paths =
+                        try walk.toArray.map(_.asInstanceOf[Path])
+                        finally walk.close()
+                    paths.sortBy(-_.getNameCount).foreach(Files.deleteIfExists(_))
                 }
         }
     }

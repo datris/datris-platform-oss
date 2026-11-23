@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{CodeRepoConfig, DatrisEnvironment, DatrisException}
+import ai.datris.model.{CodeRepoConfig, DatrisEnvironment, DatrisException, ValidationException}
 import com.google.gson.{Gson, JsonObject, JsonParser}
 import org.apache.http.client.config.RequestConfig
 import org.apache.http.client.methods.{HttpDelete, HttpEntityEnclosingRequestBase, HttpGet, HttpPut, HttpUriRequest}
@@ -53,9 +53,10 @@ object GithubClient {
     /** The contents-API URL of `path`, always naming a file inside the
       * repository's contents: the path is resolved as a repository path
       * first (empty and `.` segments dropped, each `..` removing the segment
-      * before it, none before the first), the way an HTTP client resolves
-      * dot segments, then each segment is URL-encoded (a `%` is sent as
-      * `%25`). */
+      * before it, none before the first), then each segment is URL-encoded
+      * (a `%` is sent as `%25`). Writes and deletes use it only for a path
+      * that [[changeRefusal]] accepts, so for them only the configured
+      * prefix can hold a segment that is resolved. */
     private[datris] def contentsUrl(config: CodeRepoConfig, path: String): String = {
         val segments = scala.collection.mutable.ArrayBuffer[String]()
         path.split("/").foreach {
@@ -67,8 +68,40 @@ object GithubClient {
             segments.map(seg => java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")).mkString("/")
     }
 
+    /** The spellings of the configured path prefix a stored path may start
+      * with: as the repository store writes it ("" or ending in `/`), in
+      * resolved form, and "" (a path stored under an earlier prefix). */
+    private def prefixForms(config: CodeRepoConfig): Seq[String] = {
+        val raw = Option(config.pathPrefix).getOrElse("")
+        val written = if (raw.isEmpty || raw.endsWith("/")) raw else raw + "/"
+        val resolved = scala.collection.mutable.ArrayBuffer[String]()
+        raw.split("/").foreach {
+            case "" | "." => ()
+            case ".." => if (resolved.nonEmpty) resolved.remove(resolved.size - 1)
+            case seg => resolved += seg
+        }
+        Seq(written, if (resolved.isEmpty) "" else resolved.mkString("/") + "/", "").distinct
+    }
+
+    /** Some(message) when a write or delete of `path` is refused: its part
+      * after the configured path prefix (the operator's setting, not judged)
+      * has an empty, `.` or `..` segment. */
+    private[datris] def changeRefusal(config: CodeRepoConfig, path: String): Option[String] = {
+        val ok = path != null && prefixForms(config).exists(f => path.startsWith(f) && ScriptPaths.plainSegments(path.substring(f.length)))
+        if (ok) None
+        else Some("The code repository path is not valid: it may not contain an empty, '.' or '..' segment after the configured path prefix.")
+    }
+
+    private def refuseChange(config: CodeRepoConfig, path: String): Unit =
+        changeRefusal(config, path).foreach(m => throw new ValidationException(m))
+
+    /** Sends a request; replaced only by specs. */
+    @volatile private[util] var transport: (HttpUriRequest, CodeRepoConfig) => (Int, String) = (request, config) => send(request, config)
+
+    private def execute(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = transport(request, config)
+
     /** Executes with auth headers; returns (status, body). */
-    private def execute(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = {
+    private def send(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = {
         request.setHeader("Authorization", "Bearer " + token(config))
         request.setHeader("Accept", "application/vnd.github+json")
         request.setHeader("X-GitHub-Api-Version", "2022-11-28")
@@ -156,8 +189,10 @@ object GithubClient {
       * file's blob at the branch head matches its blob at `baseCommitSha` —
       * i.e. nobody changed THIS file since the caller last read it. GitHub's
       * own `sha` parameter enforces the same check race-free at commit time.
+      * Refuses a path [[changeRefusal]] refuses, sending nothing.
       */
     def putFile(config: CodeRepoConfig, path: String, content: String, message: String, baseCommitSha: String): String = {
+        refuseChange(config, path)
         val headBlob = getFile(config, path, config.branch)
         if (baseCommitSha != null && baseCommitSha.nonEmpty && headBlob.isDefined) {
             val baseBlob = getFile(config, path, baseCommitSha)
@@ -188,8 +223,10 @@ object GithubClient {
         parse(body).getAsJsonObject("commit").get("sha").getAsString
     }
 
-    /** Commit a file removal. No-op if the file is already absent. */
+    /** Commit a file removal. No-op if the file is already absent. Refuses a
+      * path [[changeRefusal]] refuses, sending nothing. */
     def deleteFile(config: CodeRepoConfig, path: String, message: String): Unit = {
+        refuseChange(config, path)
         getFile(config, path, config.branch) match {
             case None => // already gone
             case Some(file) =>

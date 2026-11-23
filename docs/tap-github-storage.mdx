@@ -20,9 +20,7 @@ built-in storage at any time.
   templated (e.g. `tap(weather-forecast): update via Datris`).
 - **Runs pinned to a commit** — a scheduled run executes exactly the version that was saved,
   served from a local cache, so cron runs make no GitHub API calls and keep working if GitHub
-  is unreachable. Only a commit SHA is cached: a tap saved through the API with a recorded
-  commit that is not a SHA (a branch name, for example) reads its script from the repository
-  on every run.
+  is unreachable. The local copy is used only when the recorded commit is a commit SHA.
 - **External editing** — commit changes from your IDE; Datris detects the drift when the tap is
   opened and offers to load the latest version.
 - **Conflict protection** — if the script changed in the repository after you opened it, saving

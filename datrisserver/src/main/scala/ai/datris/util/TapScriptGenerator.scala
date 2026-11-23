@@ -479,6 +479,20 @@ object TapScriptGenerator {
     def deleteScript(scriptPath: String): Unit = deleteScriptUnder(scriptPath, null, null)
 
     /**
+     * Delete the tap `tapName`'s script objects `paths` that are under the
+     * tap script folder (`tap-scripts/`); any other path is left in place,
+     * with one INFO line naming the tap (not the key) unless every such path
+     * is in `alreadyReported`.
+     */
+    def deleteTapScripts(tapName: String, paths: Seq[String], alreadyReported: Set[String] = Set.empty, objects: ObjectStoreUtility = null): Unit = {
+        val prefix = MinioCodeStore.TapPrefix
+        val (inside, outside) = Option(paths).getOrElse(Nil).filter(p => p != null && p.nonEmpty).partition(_.startsWith(prefix))
+        inside.foreach(p => deleteScriptUnder(p, prefix, objects))
+        if (outside.exists(p => !alreadyReported.contains(p)))
+            logger.info("Script of tap '" + LogSafe.text(tapName) + "' left in place: a stored reference is outside the tap script folder")
+    }
+
+    /**
      * Delete a script from MinIO. `keyPrefix`, when non-null, must prefix the
      * path; a path outside it is left alone.
      */

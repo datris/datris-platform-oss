@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.auth.CallerVisibility
 import ai.datris.model.{ResolvedKey, TapConfig}
-import ai.datris.util.{CatalogOps, MinioCodeStore, TapScriptCache}
+import ai.datris.util.{CatalogOps, MinioCodeStore}
 
 import scala.util.Try
 
@@ -30,18 +30,14 @@ import scala.util.Try
   * path that starts with the repository's path prefix, written as
   * configured or in [[normalizedRef]] form (the prefix is the operator's
   * setting and is not judged), whose part after the prefix has no empty,
-  * `.` or `..` segment and is not under the `pipelines/` folder; a path
-  * whose local cache name ([[TapScriptCache.fileName]]) is that of a file
-  * under the `pipelines/` folder is under it. Both store clients send a
-  * `%` in a reference escaped (`%25`), so a percent sequence names a file
-  * of that literal name and is judged as written ([[TapReferenceRulesSpec]]
-  * pins the encoders).
+  * `.` or `..` segment and is not under the `pipelines/` folder. Both
+  * store clients send a `%` in a reference escaped (`%25`), so a percent
+  * sequence names a file of that literal name and is judged as written
+  * ([[TapReferenceRulesSpec]] pins the encoders).
   *
   * A candidate is compared with other taps' current scripts in
   * [[normalizedRef]] form, for both storage kinds, so two spellings of one
-  * file compare equal; a repository path is also compared by its local
-  * cache name, so two paths the cache stores under one name are the same
-  * script.
+  * file compare equal.
   *
   * Rules and where they apply:
   *  - 3: a limited caller's new or changed reference must be in the tap
@@ -131,31 +127,22 @@ object TapReferenceRules {
         Seq(normalizePrefix(prefix), if (canonical.isEmpty) "" else canonical + "/").distinct
     }
 
-    /** The local cache name of a repository path ([[TapScriptCache.fileName]]). */
-    def cacheName(p: String): String = TapScriptCache.fileName(p)
-
     /** True when `p` is a repository path inside the tap script area for
       * the path prefix `prefix`: it starts with a form of the prefix
-      * ([[prefixForms]]), the part after it has plain segments, and neither
-      * that part nor `p`'s cache name is under the `pipelines/` folder. */
-    def repoInArea(p: String, prefix: String): Boolean = {
-        if (p == null) return false
-        val forms = prefixForms(prefix)
-        val pipelinesCache = forms.map(f => cacheName(f + "pipelines/"))
-        val name = cacheName(p)
-        !pipelinesCache.exists(name.startsWith) &&
-        forms.exists { f =>
+      * ([[prefixForms]]), and the part after it has plain segments and is not
+      * under the `pipelines/` folder. */
+    def repoInArea(p: String, prefix: String): Boolean =
+        p != null && prefixForms(prefix).exists { f =>
             p.startsWith(f) && {
                 val rest = p.substring(f.length)
-                plainSegments(rest) && !cacheName(rest).startsWith("pipelines_")
+                plainSegments(rest) && !rest.startsWith("pipelines/")
             }
         }
-    }
 
     /** True when the repository paths `a` and `b` are one script: the same
-      * file once normalised, or the same local cache name. */
+      * file once normalised. */
     def sameRepoScript(a: String, b: String): Boolean =
-        a != null && b != null && (normalizedRef(a) == normalizedRef(b) || cacheName(a) == cacheName(b))
+        a != null && b != null && normalizedRef(a) == normalizedRef(b)
 
     /** The built-in script a tap runs: its `scriptPath` unless it is an HTTP
       * tap or stored in a code repository. */

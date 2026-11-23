@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder, JsonElement, JsonNull, JsonParser}
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, ResourceHiddenException, VersionActor}
-import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion, PipelineConfig}
+import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion, PipelineConfig, ValidationException}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -1750,10 +1750,15 @@ class TapAPIController {
         // Definition versions: hard-delete every snapshot for this tap AND
         // GC the script objects they pinned (now that we have the index to
         // do it cleanly). deleteScript is idempotent, so re-deleting the
-        // current scriptPath removed above is harmless.
+        // current scriptPath removed above is harmless. Only keys under the
+        // tap script folder are deleted; any other reference is left in place.
         try {
-            EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.tapVersionTableName, name)
-                .foreach(TapScriptGenerator.deleteScript)
+            TapScriptGenerator.deleteTapScripts(
+                name,
+                EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.tapVersionTableName, name),
+                // the built-in store's delete above already logged the current reference
+                alreadyReported = Option(existing).filter(e => TapCodeStore.forTap(e) == MinioCodeStore).flatMap(e => Option(e.scriptPath)).toSet
+            )
         } catch {
             case ex: Exception => logger.warn("Tap version cleanup failed for " + name + ": " + ex.getMessage)
         }
@@ -1826,6 +1831,9 @@ class TapAPIController {
                 throw new DatrisException("tapName is required")
             if (script == null || script.isEmpty)
                 throw new DatrisException("script is required")
+            // Every caller, before anything is read or written: a name whose
+            // script path would have an empty, `.` or `..` segment is a 400.
+            ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             TapAPIController.restrictedRefusal(request, tapName, "update").foreach(return _)
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)

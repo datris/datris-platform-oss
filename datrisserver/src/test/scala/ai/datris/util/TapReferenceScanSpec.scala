@@ -159,14 +159,14 @@ class TapReferenceScanSpec extends AnyFunSuite with BeforeAndAfterEach {
                 repoTap("repo-in", pre + "repo-in.py"),
                 repoTap("repo-doubled", pre + "/repo-doubled.py"),
                 repoTap("repo-pipelines", pre + "pipelines/p/transformation.py"),
-                repoTap("repo-pipelines-name", pre + "pipelines_p_transformation.py")
+                repoTap("pipelines_p_transformation", pre + "pipelines_p_transformation.py")
             )
             val r = TapReferenceScan.scan(taps, resolve, n => secretOwners.get(n), Nil, () => pre)
-            assert(names(r, TapReferenceScan.OutsideArea) == List("repo-doubled", "repo-pipelines", "repo-pipelines-name"), prefix + ": " + r)
+            assert(names(r, TapReferenceScan.OutsideArea) == List("repo-doubled", "repo-pipelines"), prefix + ": " + r)
         }
     }
 
-    test("scan: taps of different catalogs on two repository paths that the script cache stores under one name share one script") {
+    test("scan: taps of different catalogs on one repository file, however its path is written, share one script; two different paths do not") {
         val r = TapReferenceScan.scan(
             List(
                 repoTap("c-sales", "datris-taps/shared/x.py"),
@@ -181,7 +181,22 @@ class TapReferenceScanSpec extends AnyFunSuite with BeforeAndAfterEach {
             Nil,
             () => "datris-taps/"
         )
-        assert(names(r, TapReferenceScan.SharedScript).toSet == Set("c-sales", "c-finance", "n-sales", "n-finance"), r.toString)
+        assert(names(r, TapReferenceScan.SharedScript).toSet == Set("n-sales", "n-finance"), r.toString)
+    }
+
+    test("scan: a repository tap whose name starts with the pipelines word, at the path the store writes, is not listed") {
+        for (n <- Seq("pipelines_sales-orders_transformation", "pipelines", "pipelines-tap", "pipelinesx")) {
+            val r = TapReferenceScan.scan(List(repoTap(n, "datris-taps/" + n + ".py")), resolve, x => secretOwners.get(x), Nil, () => "datris-taps/")
+            assert(names(r, TapReferenceScan.OutsideArea).isEmpty && r.unreadable.isEmpty, n + ": " + r)
+        }
+        val r = TapReferenceScan.scan(
+            List(repoTap("in-folder", "datris-taps/pipelines/p/transformation.py")),
+            resolve,
+            x => secretOwners.get(x),
+            Nil,
+            () => "datris-taps/"
+        )
+        assert(names(r, TapReferenceScan.OutsideArea) == List("in-folder"), r.toString)
     }
 
     test("scan: the repository settings are not read when no tap is stored in a repository; a failed read lists the repository taps as unreadable") {
