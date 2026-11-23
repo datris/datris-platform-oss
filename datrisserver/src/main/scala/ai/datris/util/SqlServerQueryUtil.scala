@@ -24,8 +24,15 @@ object SqlServerQueryUtil {
     private val DEFAULT_LIMIT = 100
 
     // Bounds a hung request thread and runaway load on the customer's server.
-    // Not applied when the caller explicitly asks for unlimited (limit < 0).
+    // A bounded query gets QUERY_TIMEOUT_SECONDS; `limit < 0` (every row) gets
+    // UNLIMITED_QUERY_TIMEOUT_SECONDS, the Postgres value.
     private val QUERY_TIMEOUT_SECONDS = 30
+    private[util] val UNLIMITED_QUERY_TIMEOUT_SECONDS = 300
+
+    /** The timeout a query runs under: [[QUERY_TIMEOUT_SECONDS]] for a
+      * bounded query, [[UNLIMITED_QUERY_TIMEOUT_SECONDS]] for `limit < 0`. */
+    private[util] def timeoutSeconds(limit: Int): Int =
+        if (limit < 0) UNLIMITED_QUERY_TIMEOUT_SECONDS else QUERY_TIMEOUT_SECONDS
 
     // Write/DDL/exec verbs, ad hoc remote-server access (OPENROWSET,
     // OPENDATASOURCE, OPENQUERY) and statements that change the session. INTO
@@ -62,14 +69,49 @@ object SqlServerQueryUtil {
         "RECONFIGURE",
         "WAITFOR",
         "DECLARE",
-        // T-SQL needs no `;` between statements, so `SELECT 1 DISABLE TRIGGER ...`
-        // is two statements: block the verbs that could ride along that way.
+        // T-SQL needs no `;` between statements. These verbs were the first
+        // attempt at stopping a second statement word by word; they stay, but
+        // the one-statement scan in [[singleStatementProblem]] and the
+        // rolled-back transaction in [[run]] are what bound it now.
         "TRIGGER",
         "SETUSER",
         "REVERT",
         "WRITETEXT",
         "UPDATETEXT"
     )
+
+    /** Reserved T-SQL words that only start or steer a statement of their
+      * own (control flow, transactions, cursors, session settings). Refused
+      * outside string literals and quoted identifiers; being reserved, none can
+      * be an unquoted column name. Not here on purpose: `END` (every `CASE`
+      * has one), `FETCH` (`OFFSET ... FETCH`), and the non-reserved `THROW`,
+      * `RECEIVE`, `SEND`, `GET`, `MOVE`, which are legal column names; the
+      * one-statement scan and the rollback cover those. */
+    private[util] val STATEMENT_KEYWORDS: Seq[String] = Seq(
+        "SET",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "SAVE",
+        "WHILE",
+        "IF",
+        "GOTO",
+        "PRINT",
+        "RAISERROR",
+        "CHECKPOINT",
+        "OPEN",
+        "CLOSE",
+        "DEALLOCATE",
+        "RETURN",
+        "BREAK",
+        "CONTINUE",
+        "READTEXT"
+    )
+
+    private val OneStatementOnly = "Only one statement is allowed in a query"
+
+    // Words that may stand right before a second SELECT of the same statement.
+    private val SetOperators = Set("UNION", "EXCEPT", "INTERSECT")
 
     /** SQL Server errors raised when the derived-table wrapper itself is the
      *  problem, not the caller's SQL: 8155 (a result column has no name, e.g.
@@ -112,31 +154,50 @@ object SqlServerQueryUtil {
         }
     }
 
-    private def run(conn: java.sql.Connection, sql: String, unlimited: Boolean, effectiveLimit: Int): SqlServerQueryResult = {
-        val stmt = conn.createStatement()
+    /** Runs `sql` with autocommit off and always rolls the transaction back,
+      * on success and on failure, so anything transactional a statement did is
+      * undone; never commits. The statement runs under [[timeoutSeconds]]
+      * whatever the limit. On success a failed rollback is raised (the undo
+      * cannot be confirmed); after a failure it is attached to that failure. */
+    private[util] def run(conn: java.sql.Connection, sql: String, unlimited: Boolean, effectiveLimit: Int): SqlServerQueryResult = {
+        conn.setAutoCommit(false)
+        var failure: Throwable = null
         try {
-            if (!unlimited) {
-                stmt.setQueryTimeout(QUERY_TIMEOUT_SECONDS)
-                stmt.setMaxRows(effectiveLimit)
-            }
-            val rs = stmt.executeQuery(sql)
+            val stmt = conn.createStatement()
             try {
-                val metaData = rs.getMetaData
-                val columnCount = metaData.getColumnCount
-                val results = new java.util.ArrayList[java.util.Map[String, Any]]()
-                val maxRows = if (unlimited) Int.MaxValue else effectiveLimit
-                while (results.size() < maxRows && rs.next()) {
-                    val row = new java.util.LinkedHashMap[String, Any]()
-                    for (i <- 1 to columnCount) {
-                        val label = Option(metaData.getColumnLabel(i)).filter(_.nonEmpty).getOrElse("column" + i)
-                        row.put(label, jsonValue(rs.getObject(i)))
+                stmt.setQueryTimeout(timeoutSeconds(if (unlimited) -1 else effectiveLimit))
+                if (!unlimited) stmt.setMaxRows(effectiveLimit)
+                val rs = stmt.executeQuery(sql)
+                try {
+                    val metaData = rs.getMetaData
+                    val columnCount = metaData.getColumnCount
+                    val results = new java.util.ArrayList[java.util.Map[String, Any]]()
+                    val maxRows = if (unlimited) Int.MaxValue else effectiveLimit
+                    while (results.size() < maxRows && rs.next()) {
+                        val row = new java.util.LinkedHashMap[String, Any]()
+                        for (i <- 1 to columnCount) {
+                            val label = Option(metaData.getColumnLabel(i)).filter(_.nonEmpty).getOrElse("column" + i)
+                            row.put(label, jsonValue(rs.getObject(i)))
+                        }
+                        results.add(row)
                     }
-                    results.add(row)
-                }
-                logger.info("SQL Server query returned " + results.size() + " rows")
-                SqlServerQueryResult(sql, results)
-            } finally Try(rs.close())
-        } finally Try(stmt.close())
+                    logger.info("SQL Server query returned " + results.size() + " rows")
+                    SqlServerQueryResult(sql, results)
+                } finally Try(rs.close())
+            } finally Try(stmt.close())
+        } catch {
+            case t: Throwable =>
+                failure = t
+                throw t
+        } finally {
+            try conn.rollback()
+            catch {
+                case e: SQLException =>
+                    if (failure != null) failure.addSuppressed(e)
+                    else throw e
+            }
+            Try(conn.setAutoCommit(true))
+        }
     }
 
     /** JSON-friendly cell values: temporal and driver-specific types (e.g.
@@ -182,6 +243,132 @@ object SqlServerQueryUtil {
             if (pattern.findFirstIn(normalized).isDefined)
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
+
+        singleStatementProblem(normalized).foreach(problem => throw new DatrisException(problem))
+    }
+
+    /** Why `sql` is not exactly one read-only statement, or None when it is.
+      * Pure; scans outside `'...'` literals and `[...]` / `"..."` identifiers:
+      *
+      *  - an unterminated literal or quoted identifier is refused;
+      *  - a `)` with no matching `(`, or a `(` never closed, is refused (a stray
+      *    `)` would close the `SELECT TOP (n) * FROM (...)` wrapper);
+      *  - a [[STATEMENT_KEYWORDS]] word, or the phrase `NEXT VALUE FOR`, is
+      *    refused as `Query contains blocked keyword: <WORD>`;
+      *  - within one parenthesis level, a `SELECT` after the first must
+      *    directly follow `UNION`, `UNION ALL`, `EXCEPT` or `INTERSECT`;
+      *    otherwise it starts a second statement.
+      *
+      * Statements cannot sit inside parentheses, so a subquery or a CTE body
+      * starts a fresh level with its own first `SELECT`. */
+    private[util] def singleStatementProblem(sql: String): Option[String] =
+        scan(sql) match {
+            case Left(problem) => Some(problem)
+            case Right(tokens) => blockedWord(tokens).orElse(secondSelect(tokens))
+        }
+
+    private def blockedWord(tokens: Vector[Token]): Option[String] = {
+        val words = tokens.collect { case Word(w, _, _) => w.toUpperCase(Locale.ROOT) }
+        val word = STATEMENT_KEYWORDS.find(words.contains)
+        // NEXT VALUE FOR: three words in a row, nothing between them.
+        lazy val nextValueFor = tokens.sliding(3).exists {
+            case Seq(Word(a, _, _), Word(b, _, _), Word(c, _, _)) =>
+                a.equalsIgnoreCase("NEXT") && b.equalsIgnoreCase("VALUE") && c.equalsIgnoreCase("FOR")
+            case _ => false
+        }
+        word.orElse(if (nextValueFor) Some("NEXT VALUE FOR") else None).map("Query contains blocked keyword: " + _)
+    }
+
+    /** One frame per parenthesis level: whether a SELECT has been seen at that
+      * level, and the level's last two tokens (for `UNION ALL`). */
+    private final class Level {
+        var sawSelect = false
+        var prev: Token = Other
+        var prevPrev: Token = Other
+        def note(t: Token): Unit = { prevPrev = prev; prev = t }
+        def afterSetOperator: Boolean = (prev, prevPrev) match {
+            case (Word(p, _, _), _) if SetOperators.contains(p.toUpperCase(Locale.ROOT)) => true
+            case (Word(all, _, _), Word(union, _, _)) => all.equalsIgnoreCase("ALL") && union.equalsIgnoreCase("UNION")
+            case _ => false
+        }
+    }
+
+    private def secondSelect(tokens: Vector[Token]): Option[String] = {
+        var levels = List(new Level)
+        val found = tokens.exists {
+            case Open =>
+                levels.head.note(Open)
+                levels = new Level :: levels
+                false
+            case Close =>
+                levels = levels.tail // scan has checked the parentheses balance
+                levels.head.note(Close)
+                false
+            case t @ Word(w, _, _) =>
+                val l = levels.head
+                val second = w.equalsIgnoreCase("SELECT") && l.sawSelect && !l.afterSetOperator
+                if (w.equalsIgnoreCase("SELECT")) l.sawSelect = true
+                l.note(t)
+                second
+            case t =>
+                levels.head.note(t)
+                false
+        }
+        if (found) Some(OneStatementOnly) else None
+    }
+
+    private sealed trait Token
+    private case object Open extends Token
+    private case object Close extends Token
+    private case object Quoted extends Token
+    private case object Other extends Token
+    private final case class Word(text: String, start: Int, depth: Int) extends Token
+
+    /** Tokens of `sql`: words (letters, digits, `_`, starting at a letter,
+      * digit or `_`) with their start offset and parenthesis depth, `(` and
+      * `)`, one token per `'...'` literal or `[...]` / `"..."` identifier, and
+      * one per other character that is not whitespace. Left when a literal or
+      * identifier is unterminated or the parentheses do not balance. Depth is
+      * reported as it is, never clamped. */
+    private def scan(sql: String): Either[String, Vector[Token]] = {
+        val out = Vector.newBuilder[Token]
+        var depth = 0
+        var i = 0
+        val n = sql.length
+        def skipQuoted(close: Char): Boolean = {
+            i += 1
+            while (i < n) {
+                if (sql.charAt(i) == close) {
+                    if (i + 1 < n && sql.charAt(i + 1) == close) i += 2 // doubled = escaped
+                    else { i += 1; return true }
+                } else i += 1
+            }
+            false
+        }
+        while (i < n) {
+            val c = sql.charAt(i)
+            if (c == '\'' || c == '"' || c == '[') {
+                val close = if (c == '[') ']' else c
+                if (!skipQuoted(close))
+                    return Left("Query has an unterminated string literal or quoted identifier")
+                out += Quoted
+            } else if (c == '(') { depth += 1; i += 1; out += Open }
+            else if (c == ')') {
+                depth -= 1
+                if (depth < 0) return Left("Query has a closing parenthesis with no matching opening one")
+                i += 1
+                out += Close
+            } else if (c.isLetterOrDigit || c == '_') {
+                val start = i
+                while (i < n && isWordChar(sql.charAt(i))) i += 1
+                out += Word(sql.substring(start, i), start, depth)
+            } else {
+                if (!c.isWhitespace) out += Other
+                i += 1
+            }
+        }
+        if (depth != 0) Left("Query has an opening parenthesis that is never closed")
+        else Right(out.result())
     }
 
     private def startsWithWord(upper: String, word: String): Boolean =
@@ -227,35 +414,12 @@ object SqlServerQueryUtil {
     }
 
     /** Words (letters, digits, `_`) at parenthesis depth 0, with their start
-     *  offsets, skipping `'...'` literals, `[...]` and `"..."` identifiers. */
-    private def topLevelWords(sql: String): Seq[(String, Int)] = {
-        val out = Seq.newBuilder[(String, Int)]
-        var depth = 0
-        var i = 0
-        val n = sql.length
-        def skipQuoted(close: Char): Unit = {
-            i += 1
-            var done = false
-            while (i < n && !done) {
-                if (sql.charAt(i) == close) {
-                    if (i + 1 < n && sql.charAt(i + 1) == close) i += 2 // doubled = escaped
-                    else { i += 1; done = true }
-                } else i += 1
-            }
+     *  offsets, skipping `'...'` literals, `[...]` and `"..."` identifiers.
+     *  Text that does not scan (unterminated quote, unbalanced parentheses)
+     *  has no words: [[validateQuery]] refuses it before a limit is applied. */
+    private def topLevelWords(sql: String): Seq[(String, Int)] =
+        scan(sql) match {
+            case Right(tokens) => tokens.collect { case Word(w, start, 0) => (w, start) }
+            case Left(_) => Seq.empty
         }
-        while (i < n) {
-            val c = sql.charAt(i)
-            if (c == '\'') skipQuoted('\'')
-            else if (c == '"') skipQuoted('"')
-            else if (c == '[') skipQuoted(']')
-            else if (c == '(') { depth += 1; i += 1 }
-            else if (c == ')') { depth = math.max(0, depth - 1); i += 1 }
-            else if (c.isLetterOrDigit || c == '_') {
-                val start = i
-                while (i < n && isWordChar(sql.charAt(i))) i += 1
-                if (depth == 0) out += ((sql.substring(start, i), start))
-            } else i += 1
-        }
-        out.result()
-    }
 }

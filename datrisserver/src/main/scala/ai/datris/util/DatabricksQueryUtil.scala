@@ -22,9 +22,16 @@ object DatabricksQueryUtil {
     private val DEFAULT_LIMIT = 100
 
     // Queries run on the customer's warehouse: the timeout bounds both a hung
-    // request thread AND runaway warehouse spend. Not applied when the caller
-    // explicitly asks for unlimited (limit < 0).
+    // request thread AND runaway warehouse spend. A bounded query gets
+    // QUERY_TIMEOUT_SECONDS; `limit < 0` (every row) gets
+    // UNLIMITED_QUERY_TIMEOUT_SECONDS, the Postgres value.
     private val QUERY_TIMEOUT_SECONDS = 30
+    private[util] val UNLIMITED_QUERY_TIMEOUT_SECONDS = 300
+
+    /** The timeout a query runs under: [[QUERY_TIMEOUT_SECONDS]] for a
+      * bounded query, [[UNLIMITED_QUERY_TIMEOUT_SECONDS]] for `limit < 0`. */
+    private[util] def timeoutSeconds(limit: Int): Int =
+        if (limit < 0) UNLIMITED_QUERY_TIMEOUT_SECONDS else QUERY_TIMEOUT_SECONDS
 
     // Write/DDL verbs (shared with Snowflake) plus Databricks-specific data
     // movement and maintenance verbs. USE is blocked so a query can't
@@ -61,6 +68,56 @@ object DatabricksQueryUtil {
         "DECLARE"
     )
 
+    /** Functions a read can call that act outside the query: call out over
+      * HTTP or to another database, invoke a model or search endpoint, read a
+      * secret, read files or streams outside the pipeline's tables, or call
+      * Java methods. Each entry is a case-insensitive regex, refused where it
+      * is called (the name, optional backticks, optional whitespace, then
+      * `(`), so a column or value named `secret` or a table named
+      * `ai_results` still reads. Every `ai_*` function is refused, including
+      * ones Databricks adds later. Matched over the whole text, string
+      * literals included, as BLOCKED_KEYWORDS is.
+      *
+      * This is a second line, not the control: Databricks has no read-only
+      * session, and the query runs as the pipeline's `credentialsSecret`
+      * identity, so its grants bound what a query can do.
+      *
+      * Vendor check, 2026-11-23: each page under
+      * docs.databricks.com/aws/en/sql/language-manual/functions/ was read
+      * (fetched, not run against a workspace). Confirmed on Databricks SQL:
+      * http_request (HTTP connection), remote_query (remote database through a
+      * connection), ai_query (Model Serving endpoint; the other ai_* functions
+      * are refused as a class), vector_search (search index; not on classic
+      * SQL warehouses), secret and try_secret (secret service), read_files,
+      * read_kafka, read_kinesis, read_pubsub, read_pulsar (streaming only, in
+      * preview), try_reflect (Databricks SQL, Runtime 14.1+; found during the
+      * check, added beside reflect). Documented for Databricks Runtime only,
+      * so unavailable on a SQL warehouse today but refused in case that
+      * changes: java_method, reflect. Not confirmed: none was executed. */
+    private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
+        "http_request",
+        "remote_query",
+        "ai_\\w+",
+        "vector_search",
+        "secret",
+        "try_secret",
+        "read_files",
+        "read_kafka",
+        "read_kinesis",
+        "read_pubsub",
+        "read_pulsar",
+        "java_method",
+        "reflect",
+        "try_reflect"
+    )
+
+    private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] =
+        BLOCKED_FUNCTIONS.map(fn => ("(?i)(?<!\\w)`?(" + fn + ")`?\\s*\\(").r)
+
+    /** The first [[BLOCKED_FUNCTIONS]] name `sql` calls, as written. */
+    private[util] def blockedFunction(sql: String): Option[String] =
+        BlockedFunctionPatterns.view.flatMap(_.findFirstMatchIn(sql)).headOption.map(_.group(1))
+
     case class DatabricksQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
 
     /** Run `sql` (or, when None, a preview of the pipeline's destination table)
@@ -95,7 +152,7 @@ object DatabricksQueryUtil {
         DatabricksConnectionUtil.withConnection(db, pipelineName = pipelineName) { conn =>
             val stmt = conn.createStatement()
             try {
-                if (!unlimited) stmt.setQueryTimeout(QUERY_TIMEOUT_SECONDS)
+                stmt.setQueryTimeout(timeoutSeconds(limit))
                 val rs = stmt.executeQuery(finalSql)
                 try {
                     val metaData = rs.getMetaData
@@ -130,7 +187,7 @@ object DatabricksQueryUtil {
         }
     }
 
-    private def validateQuery(sql: String): Unit = {
+    private[util] def validateQuery(sql: String): Unit = {
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 
@@ -157,6 +214,8 @@ object DatabricksQueryUtil {
             if (pattern.findFirstIn(normalized).isDefined)
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
+
+        blockedFunction(normalized).foreach(fn => throw new DatrisException("Query contains blocked function: " + fn))
     }
 
     private def appendLimitIfNeeded(sql: String, limit: Int): String = {

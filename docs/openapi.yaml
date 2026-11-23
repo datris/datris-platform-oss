@@ -4087,7 +4087,7 @@ paths:
                 limit:
                   type: integer
                   default: 100
-                  description: Maximum rows to return
+                  description: Maximum rows to return. Pass -1 for unlimited; the query then runs under a 5-minute (300-second) time limit instead of 30 seconds.
       responses:
         '200':
           description: Query results including the SQL that was executed
@@ -4144,7 +4144,7 @@ paths:
                 limit:
                   type: integer
                   default: 100
-                  description: Maximum rows to return. 0 means the default; there is no upper bound. Pass -1 for unlimited (also disables the 30-second query timeout).
+                  description: Maximum rows to return. 0 means the default; there is no upper bound. Pass -1 for unlimited; the query then runs under a 5-minute (300-second) time limit instead of 30 seconds.
       responses:
         '200':
           description: Query results including the SQL that was executed
@@ -4203,7 +4203,7 @@ paths:
                 limit:
                   type: integer
                   default: 100
-                  description: Maximum rows to return
+                  description: Maximum rows to return. Pass -1 for unlimited; the query then runs under a 5-minute (300-second) time limit instead of 30 seconds.
       responses:
         '200':
           description: Query results including the SQL that was executed

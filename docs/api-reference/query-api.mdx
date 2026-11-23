@@ -215,7 +215,7 @@ POST /api/v1/query/snowflake
 |-------|------|----------|---------|-------------|
 | `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a Snowflake destination. |
 | `sql` | string | No | `SELECT * FROM {destination table}` | SQL to execute. When omitted, previews the pipeline's destination table. |
-| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited (also disables the query timeout). |
+| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited; the query then runs under a 5-minute time limit instead of 30 seconds. |
 
 ### Example
 
@@ -254,7 +254,12 @@ The `sql` field echoes the query that actually ran, including any automatically 
 - **No stacked queries** — semicolons are not allowed
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
 - **LIMIT enforcement** — if a `SELECT`/`WITH` query has no `LIMIT`, one is appended using the request's `limit` value. `SHOW`/`DESCRIBE` output is row-capped at the same value.
-- **Query timeout** — 30 seconds, bounding both hung requests and warehouse spend. Not applied when `limit: -1`.
+- **Function blocklist** — a query that calls a `SYSTEM$` function is rejected with the function named (`Query contains blocked function: <name>`), except the read-only `SYSTEM$TYPEOF`, `SYSTEM$CLUSTERING_INFORMATION` and `SYSTEM$CLUSTERING_DEPTH`. This covers functions that cancel or abort other queries, sessions or transactions, resume pipes or tasks, or wait (`SYSTEM$CANCEL_QUERY`, `SYSTEM$ABORT_SESSION`, `SYSTEM$WAIT` and others). `NEXTVAL` is rejected anywhere, since reading it advances a sequence. Like the statement blocklist, the check covers string literals too.
+- **Query timeout** — 30 seconds, bounding both hung requests and warehouse spend; 5 minutes when `limit: -1`. A cancelled query returns an error and no rows.
+
+<Note>
+Snowflake has no read-only session. The query runs as the pipeline's credentials role, so the blocklists are a second line and that role's grants are the real control: give the pipeline a least-privilege role. External functions cannot be told apart by name and are bounded only by those grants.
+</Note>
 
 ### Error Cases
 
@@ -282,7 +287,7 @@ POST /api/v1/query/databricks
 |-------|------|----------|---------|-------------|
 | `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a Databricks destination. |
 | `sql` | string | No | `SELECT * FROM {destination table}` | SQL to execute. When omitted, previews the pipeline's destination table. |
-| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited (also disables the query timeout). |
+| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited; the query then runs under a 5-minute time limit instead of 30 seconds. |
 
 ### Example
 
@@ -316,7 +321,11 @@ The `sql` field echoes the query that actually ran, including any automatically 
 
 ### Safety
 
-Same protections as [Query Snowflake](#query-snowflake), with the blocklist extended for Databricks-specific data-movement and maintenance verbs: `OPTIMIZE`, `VACUUM`, `RESTORE`, `CLONE`, `REFRESH`, `MSCK`, and `DECLARE` are also rejected.
+Same allowlist, semicolon and comment rules, `LIMIT` enforcement and time limit (30 seconds; 5 minutes when `limit: -1`) as [Query Snowflake](#query-snowflake), with the statement blocklist extended for Databricks-specific data-movement and maintenance verbs: `OPTIMIZE`, `VACUUM`, `RESTORE`, `CLONE`, `REFRESH`, `MSCK`, and `DECLARE` are also rejected.
+
+A query that calls one of these functions is rejected with the function named (`Query contains blocked function: <name>`): `http_request`, `remote_query`, every `ai_*` function (`ai_query`, `ai_gen` and the rest), `vector_search`, `secret`, `try_secret`, `read_files`, `read_kafka`, `read_kinesis`, `read_pubsub`, `read_pulsar`, `java_method`, `reflect` and `try_reflect`. Only a call is refused (the name followed by `(`), so a column named `secret` or a table named `ai_results` still reads. The check covers string literals too.
+
+Databricks has no read-only session. The query runs as the pipeline's credentials identity, so the blocklists are a second line and that identity's grants are the real control.
 
 <Note>
 If the SQL warehouse is stopped, opening the connection blocks while it auto-starts — this happens before the 30-second query timeout applies, so the first query after idle time can take longer.
@@ -348,7 +357,7 @@ POST /api/v1/query/sqlserver
 |-------|------|----------|---------|-------------|
 | `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a SQL Server destination. |
 | `sql` | string | No | `SELECT * FROM {schema}.{table}` | T-SQL to execute. When omitted, previews the pipeline's destination table. |
-| `limit` | integer | No | 100 | Maximum rows to return. `0` means the default; there is no upper bound. Pass `-1` for unlimited (also disables the query timeout). |
+| `limit` | integer | No | 100 | Maximum rows to return. `0` means the default; there is no upper bound. Pass `-1` for unlimited; the query then runs under a 5-minute time limit instead of 30 seconds. |
 
 ### Example
 
@@ -396,7 +405,10 @@ When SQL Server rejects the wrapper itself (a result column without a name such 
 - **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `DENY`, `EXEC`, `EXECUTE`, `MERGE`, `INTO` (so `SELECT ... INTO` cannot create a table), `USE`, `BULK`, `OPENROWSET`, `OPENDATASOURCE`, `OPENQUERY`, `DBCC`, `BACKUP`, `RESTORE`, `SHUTDOWN`, `KILL`, `RECONFIGURE`, `WAITFOR`, `DECLARE`, `TRIGGER`, `SETUSER`, `REVERT`, `WRITETEXT` or `UPDATETEXT` are rejected. The check covers the whole statement, string literals included, so `WHERE note = 'please delete'` is rejected too
 - **No stacked queries** — semicolons are not allowed
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
-- **Query timeout** — 30 seconds. Not applied when `limit: -1`.
+- **One statement** — T-SQL needs no semicolon between statements, so the query is scanned: a second `SELECT` that does not follow `UNION`, `UNION ALL`, `EXCEPT` or `INTERSECT` is rejected with `Only one statement is allowed in a query`, as are an unterminated string literal or quoted identifier and parentheses that do not balance. Subqueries, CTEs and `CASE ... END` are fine.
+- **Control-flow and transaction words** — `SET`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `WHILE`, `IF`, `GOTO`, `PRINT`, `RAISERROR`, `CHECKPOINT`, `OPEN`, `CLOSE`, `DEALLOCATE`, `RETURN`, `BREAK`, `CONTINUE`, `READTEXT` and the phrase `NEXT VALUE FOR` (which advances a sequence) are rejected outside string literals and quoted identifiers, so `WHERE note = 'set if while'` and `SELECT [set] FROM t` still run. `OFFSET ... FETCH NEXT ... ROWS ONLY` is fine.
+- **Rolled back** — the query runs in a transaction that is always rolled back, never committed.
+- **Query timeout** — 30 seconds; 5 minutes when `limit: -1`. A cancelled query returns an error and no rows.
 
 ### Error Cases
 

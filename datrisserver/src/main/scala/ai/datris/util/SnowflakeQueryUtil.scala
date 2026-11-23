@@ -21,9 +21,16 @@ object SnowflakeQueryUtil {
     private val DEFAULT_LIMIT = 100
 
     // Queries run on the customer's warehouse: the timeout bounds both a hung
-    // request thread AND runaway warehouse spend. Not applied when the caller
-    // explicitly asks for unlimited (limit < 0).
+    // request thread AND runaway warehouse spend. A bounded query gets
+    // QUERY_TIMEOUT_SECONDS; `limit < 0` (every row) gets
+    // UNLIMITED_QUERY_TIMEOUT_SECONDS, the Postgres value.
     private val QUERY_TIMEOUT_SECONDS = 30
+    private[util] val UNLIMITED_QUERY_TIMEOUT_SECONDS = 300
+
+    /** The timeout a query runs under: [[QUERY_TIMEOUT_SECONDS]] for a
+      * bounded query, [[UNLIMITED_QUERY_TIMEOUT_SECONDS]] for `limit < 0`. */
+    private[util] def timeoutSeconds(limit: Int): Int =
+        if (limit < 0) UNLIMITED_QUERY_TIMEOUT_SECONDS else QUERY_TIMEOUT_SECONDS
 
     // Write/DDL verbs (shared with Postgres) plus Snowflake-specific data
     // movement and session verbs. USE is blocked so a query can't re-point the
@@ -47,6 +54,61 @@ object SnowflakeQueryUtil {
         "MERGE",
         "USE"
     )
+
+    /** Functions a read can call that act outside the query: cancel or abort
+      * other queries, sessions and transactions, resume pipes and tasks, hold
+      * the warehouse, or advance a sequence. Each entry is a case-insensitive
+      * regex. A `SYSTEM$` name is refused where it is called (the name,
+      * optional whitespace, then `(`), every one of them except
+      * [[SYSTEM_FUNCTION_ALLOWLIST]], so a name added by Snowflake later is
+      * refused too. `NEXTVAL` is written without parentheses
+      * (`<sequence>.NEXTVAL`), so it is refused as a whole word. Matched over
+      * the whole text, string literals included, as BLOCKED_KEYWORDS is.
+      *
+      * This is a second line, not the control: Snowflake has no read-only
+      * session, and the query runs as the pipeline's `credentialsSecret` role,
+      * so that role's grants bound what a query can do. External functions
+      * (a user-defined name that calls out over the network) cannot be told
+      * apart by name and are bounded only by those grants.
+      *
+      * Vendor check, 2026-11-23: each page under
+      * docs.snowflake.com/en/sql-reference/functions/ was read (fetched, not
+      * run against an account). Confirmed as System Control functions that
+      * act: SYSTEM$CANCEL_QUERY, SYSTEM$CANCEL_ALL_QUERIES,
+      * SYSTEM$ABORT_SESSION, SYSTEM$ABORT_TRANSACTION, SYSTEM$PIPE_FORCE_RESUME,
+      * SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS,
+      * SYSTEM$TASK_DEPENDENTS_ENABLE, SYSTEM$WAIT. Confirmed as System
+      * Information functions that only read (the allowlist): SYSTEM$TYPEOF,
+      * SYSTEM$CLUSTERING_INFORMATION, SYSTEM$CLUSTERING_DEPTH. NEXTVAL:
+      * confirmed in the sequences guide (user-guide/querying-sequences); each
+      * reference generates new values. Not confirmed: none of these was
+      * executed, and no other SYSTEM$ name was reviewed one by one (they are
+      * refused as a class). */
+    private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
+        "SYSTEM\\$[\\w$]+",
+        "NEXTVAL"
+    )
+
+    /** Read-only `SYSTEM$` functions a query may call. */
+    private[util] val SYSTEM_FUNCTION_ALLOWLIST: Set[String] = Set(
+        "SYSTEM$TYPEOF",
+        "SYSTEM$CLUSTERING_INFORMATION",
+        "SYSTEM$CLUSTERING_DEPTH"
+    )
+
+    // BLOCKED_FUNCTIONS entries refused as whole words rather than as calls.
+    private val WordOnlyFunctions = Set("NEXTVAL")
+
+    private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] = BLOCKED_FUNCTIONS.map { fn =>
+        if (WordOnlyFunctions.contains(fn)) ("(?i)(?<![\\w$])(" + fn + ")(?![\\w$])").r
+        else ("(?i)(?<![\\w$])\"?(" + fn + ")\"?\\s*\\(").r
+    }
+
+    /** The first [[BLOCKED_FUNCTIONS]] name `sql` uses, as written. */
+    private[util] def blockedFunction(sql: String): Option[String] =
+        BlockedFunctionPatterns.iterator
+            .flatMap(_.findAllMatchIn(sql).map(_.group(1)))
+            .find(name => !SYSTEM_FUNCTION_ALLOWLIST.contains(name.toUpperCase(java.util.Locale.ROOT)))
 
     case class SnowflakeQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
 
@@ -82,7 +144,7 @@ object SnowflakeQueryUtil {
         SnowflakeConnectionUtil.withConnection(db) { conn =>
             val stmt = conn.createStatement()
             try {
-                if (!unlimited) stmt.setQueryTimeout(QUERY_TIMEOUT_SECONDS)
+                stmt.setQueryTimeout(timeoutSeconds(limit))
                 val rs = stmt.executeQuery(finalSql)
                 try {
                     val metaData = rs.getMetaData
@@ -117,7 +179,7 @@ object SnowflakeQueryUtil {
         }
     }
 
-    private def validateQuery(sql: String): Unit = {
+    private[util] def validateQuery(sql: String): Unit = {
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 
@@ -144,6 +206,8 @@ object SnowflakeQueryUtil {
             if (pattern.findFirstIn(normalized).isDefined)
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
+
+        blockedFunction(normalized).foreach(fn => throw new DatrisException("Query contains blocked function: " + fn))
     }
 
     private def appendLimitIfNeeded(sql: String, limit: Int): String = {

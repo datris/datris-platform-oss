@@ -2752,14 +2752,16 @@ def _base_tools():
                 "`SHOW DATABASES`, `SHOW SCHEMAS IN DATABASE <db>`, `SHOW TABLES IN SCHEMA <db>.<schema>`, "
                 "`DESCRIBE TABLE <db>.<schema>.<table>`, or query <db>.information_schema.columns. "
                 "Queries run on the customer's configured warehouse (which costs them compute) — keep them "
-                "targeted and let the default LIMIT stand unless the user asks for more."
+                "targeted and let the default LIMIT stand unless the user asks for more. "
+                "Calls to SYSTEM$ functions (except SYSTEM$TYPEOF and the clustering functions) and NEXTVAL are refused. "
+                "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a Snowflake destination."},
                     "sql": {"type": "string", "description": "Read-only statement: SELECT/WITH, SHOW, or DESCRIBE. Omit to preview the pipeline's destination table."},
-                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited (300-second time limit)."}
                 },
                 "required": ["pipeline"]
             }
@@ -2779,14 +2781,17 @@ def _base_tools():
                 "list_sqlserver_* tools: `SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES`, "
                 "`SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '<table>'`. "
                 "Queries run on the customer's server — keep them targeted and let the default limit stand unless "
-                "the user asks for more."
+                "the user asks for more. Exactly one statement runs: a second SELECT outside UNION/EXCEPT/INTERSECT, "
+                "unbalanced parentheses, control-flow or transaction words (SET, BEGIN, WHILE, IF, PRINT and others) "
+                "and NEXT VALUE FOR are refused, and the query is always rolled back. "
+                "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a SQL Server destination."},
                     "sql": {"type": "string", "description": "Read-only T-SQL statement: SELECT or WITH. Omit to preview the pipeline's destination table."},
-                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited (300-second time limit)."}
                 },
                 "required": ["pipeline"]
             }
@@ -2805,14 +2810,17 @@ def _base_tools():
                 "`DESCRIBE TABLE <catalog>.<schema>.<table>`, or query <catalog>.information_schema.columns. "
                 "Queries run on the customer's SQL warehouse (which costs them compute) — keep them "
                 "targeted and let the default LIMIT stand unless the user asks for more. If the warehouse is "
-                "stopped, the first query auto-starts it and may take longer."
+                "stopped, the first query auto-starts it and may take longer. "
+                "Calls to http_request, remote_query, any ai_* function, vector_search, secret/try_secret, read_files, "
+                "the streaming readers and java_method/reflect are refused. "
+                "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a Databricks destination."},
                     "sql": {"type": "string", "description": "Read-only statement: SELECT/WITH, SHOW, or DESCRIBE. Omit to preview the pipeline's destination table."},
-                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited (300-second time limit)."}
                 },
                 "required": ["pipeline"]
             }
