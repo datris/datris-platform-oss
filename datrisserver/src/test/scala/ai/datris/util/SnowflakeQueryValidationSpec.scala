@@ -116,12 +116,22 @@ class SnowflakeQueryValidationSpec extends AnyFunSuite {
         refusedNaming("SELECT SYSTEM$TYPEOF(SYSTEM$WAIT(1))", "SYSTEM$WAIT")
     }
 
-    test("an IDENTIFIER call is refused; GETNEXTVAL is refused; a // line comment is refused") {
+    test("an IDENTIFIER call is refused, line comments between it and its parenthesis included; GETNEXTVAL is refused") {
         cases("IDENTIFIER('SYSTEM$TYPEOF')(1)").foreach(c => refusedNaming("SELECT " + c, "IDENTIFIER"))
         refusedNaming("SELECT * FROM IDENTIFIER ('db.s.t')", "IDENTIFIER")
         cases("TABLE(GETNEXTVAL(seq1))").foreach(c => refusedNaming("SELECT s.v FROM t, " + c + " s", "GETNEXTVAL"))
-        val e = intercept[DatrisException](validate("SELECT a //x\n FROM t"))
-        assert(e.getMessage == "SQL comments are not allowed in queries", e.getMessage)
+        // a URL literal holds `//` and still reads
+        validate("SELECT a FROM t WHERE u = 'https://example.com/x'")
+        // a `//` line comment between IDENTIFIER and its parenthesis does not hide the call
+        Seq("SELECT IDENTIFIER//x\n('SYSTEM$TYPEOF')(1)", "SELECT identifier //a\n //b\n  ('t')").foreach { sql =>
+            val e = intercept[DatrisException](validate(sql))
+            assert(e.getMessage == "Query contains blocked function: IDENTIFIER", sql + " -> " + e.getMessage)
+        }
+        // a `(` inside the comment is not the call's, and a long run of `//` stays quick
+        validate("SELECT identifier //x (y\n FROM t")
+        validate("SELECT identifier " + ("// " * 2000) + "\n FROM t")
+        // a SYSTEM$ name followed by a `//` comment is still refused (whole word)
+        refusedNaming("SELECT SYSTEM$WAIT//x\n(10)", "SYSTEM$WAIT")
         // a column whose name only contains the word is not the call
         validate("SELECT identifier_type, getnextval_count FROM t")
     }

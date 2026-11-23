@@ -63,7 +63,8 @@ object SnowflakeQueryUtil {
       * by Snowflake later is refused too; nothing else is named `SYSTEM$...`.
       * `NEXTVAL` (`<sequence>.NEXTVAL`) and `GETNEXTVAL` (the table-function
       * form) advance a sequence. `IDENTIFIER` is refused only where it is
-      * called (the name, optional whitespace, then `(`): it turns a string,
+      * called (the name, then any mix of whitespace and `//` line comments,
+      * then `(`; `--` and block comments are refused outright): it turns a string,
       * built any way, into a function name, so no name list could catch what
       * it calls. Matched over the whole text, string literals included, as
       * BLOCKED_KEYWORDS is. Names are reported in upper case.
@@ -104,11 +105,17 @@ object SnowflakeQueryUtil {
         "SYSTEM$CLUSTERING_DEPTH"
     )
 
+    // Between a called name and its `(`: whitespace and `//` line comments
+    // (to the end of the line, or of the text), in any mix. Possessive, so a
+    // line of repeated `//` cannot make the match backtrack, and a `(` inside
+    // a comment is not taken for the call's.
+    private val GapBeforeParen = "(?:\\s|//[^\\r\\n]*+)*+"
+
     // BLOCKED_FUNCTIONS entries refused only as calls rather than as whole words.
     private val CallOnlyFunctions = Set("IDENTIFIER")
 
     private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] = BLOCKED_FUNCTIONS.map { fn =>
-        if (CallOnlyFunctions.contains(fn)) ("(?i)(?<![\\w$])\"?(" + fn + ")\"?\\s*\\(").r
+        if (CallOnlyFunctions.contains(fn)) ("(?i)(?<![\\w$])\"?(" + fn + ")\"?" + GapBeforeParen + "\\(").r
         else ("(?i)(?<![\\w$])(" + fn + ")(?![\\w$])").r
     }
 
@@ -205,9 +212,11 @@ object SnowflakeQueryUtil {
         if (normalized.contains(";"))
             throw new DatrisException("Semicolons are not allowed in queries")
 
-        // Reject SQL comments that could be used for obfuscation (Snowflake
-        // also reads `//` as a line comment)
-        if (normalized.contains("--") || normalized.contains("/*") || normalized.contains("//"))
+        // Reject SQL comments that could be used for obfuscation. Snowflake
+        // also reads `//` as a line comment; that is not refused here (a URL
+        // in a literal holds one), so the call-form check in
+        // blockedFunction allows for it instead.
+        if (normalized.contains("--") || normalized.contains("/*"))
             throw new DatrisException("SQL comments are not allowed in queries")
 
         BLOCKED_KEYWORDS.foreach { keyword =>
