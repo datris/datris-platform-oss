@@ -385,9 +385,10 @@ object TapAPIController {
       * (`saveTapCore`) makes, so specs can drive every save check on a save
       * and on a version restore without Mongo, Vault or a script store.
       * [[ProductionSaveIO]] is what `POST /tap`, the catalog restore and the
-      * version restore use. `scriptExists` and `readScript` may throw; the
-      * core handles that as before. */
-    private[api] case class TapSaveIO(
+      * version restore use; the recovery agent's tap revert uses it too.
+      * `scriptExists` and `readScript` may throw; the core handles that as
+      * before. */
+    private[datris] case class TapSaveIO(
         readTap: String => TapConfig,
         readPipeline: String => PipelineConfig,
         secretType: String => Option[Option[String]],
@@ -399,7 +400,7 @@ object TapAPIController {
 
     /** The production store wiring of [[TapSaveIO]]: the same calls the save
       * path made inline. */
-    private[api] lazy val ProductionSaveIO: TapSaveIO = TapSaveIO(
+    private[datris] lazy val ProductionSaveIO: TapSaveIO = TapSaveIO(
         readTap = n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
         readPipeline = readPipelineForSave,
         secretType = n => liveSecretType(n),
@@ -1062,6 +1063,27 @@ class TapAPIController {
     ): Either[ResponseEntity[String], TapConfig] =
         saveTapCore(candidate, null, request, restored = false, Some(TapAPIController.RestoreOf(live, version)), () => hidden, io)
 
+    /** The recovery agent's tap revert (`IncidentRunner`), checked like a
+      * version restore of `version` over `live` (the stored tap the revert
+      * decided on, never null): every save check of [[restoreTapInternal]]
+      * runs on `candidate` with no caller identity, except the
+      * test-before-cron gate (the pre-agent script is the one that was
+      * scheduled before the agent acted). Nothing is written: Right is the
+      * config the save path would write (`updatedAt` and `inferredDependsOn`
+      * stamped; the live tap's test state and stamp, which the caller
+      * replaces); Left is the refusal a save of it gets. Store failures are
+      * thrown. The caller writes, under the catalog lock, through the same
+      * `io`. */
+    private[datris] def checkTapRevert(
+        candidate: TapConfig,
+        live: TapConfig,
+        version: Int,
+        io: TapAPIController.TapSaveIO
+    ): Either[ResponseEntity[String], TapConfig] = {
+        if (live == null) throw new DatrisException("tap " + candidate.name + " no longer exists")
+        saveTapCore(candidate, null, null, restored = false, Some(TapAPIController.RestoreOf(live, version)), () => null, io, revertCheck = true)
+    }
+
     /** The save path. `versionRestore` None is `POST /tap` and the catalog
       * restore (`restored`), unchanged. Some is a tap version restore, which
       * differs in four places only: (a) the guard is always taken, decided on
@@ -1074,7 +1096,12 @@ class TapAPIController {
       * ([[EntityVersionAPIController.tapRestoreRecheck]]) and the write run
       * under `CatalogOps.withCatalogLock`. `hidden` is used only when
       * `versionRestore` is Some. Every store read and the write go through
-      * `io` ([[TapAPIController.ProductionSaveIO]] outside specs). */
+      * `io` ([[TapAPIController.ProductionSaveIO]] outside specs).
+      * `revertCheck` ([[checkTapRevert]], with `versionRestore` Some): no
+      * caller identity, so no scope guard; no test-before-cron gate; a script
+      * that cannot be read for dependency inference keeps the candidate's
+      * `inferredDependsOn`; nothing is written and the checked config is
+      * returned. */
     private def saveTapCore(
         tapConfig: TapConfig,
         changeNote: String,
@@ -1082,7 +1109,8 @@ class TapAPIController {
         restored: Boolean,
         versionRestore: Option[TapAPIController.RestoreOf],
         hidden: () => ResponseEntity[String],
-        io: TapAPIController.TapSaveIO
+        io: TapAPIController.TapSaveIO,
+        revertCheck: Boolean = false
     ): Either[ResponseEntity[String], TapConfig] = {
         if (tapConfig.name == null || tapConfig.name.isEmpty)
             throw new DatrisException("Tap name is required")
@@ -1093,9 +1121,10 @@ class TapAPIController {
         // Both before anything is validated or written.
         // A version restore is always guarded, on the live tap it has already
         // read (it reads nothing more here); its guard holds the target
-        // pipeline rule too.
+        // pipeline rule too. The recovery agent's revert has no caller.
         val scoped =
-            if (versionRestore.isDefined)
+            if (revertCheck) tapConfig
+            else if (versionRestore.isDefined)
                 EntityVersionAPIController.tapRestoreGuardDecision(
                     request,
                     tapConfig,
@@ -1116,7 +1145,7 @@ class TapAPIController {
         // caller may load into (restricted session: hidden/missing -> pipeline
         // 404; pipeline-limited key: 403).
         if (versionRestore.isEmpty) TapAPIController.targetPipelineRefusal(request, scoped).foreach(r => return Left(r))
-        saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, io)
+        saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, io, revertCheck)
     }
 
     private def saveTapScoped(
@@ -1126,7 +1155,8 @@ class TapAPIController {
         restored: Boolean,
         versionRestore: Option[TapAPIController.RestoreOf],
         hidden: () => ResponseEntity[String],
-        io: TapAPIController.TapSaveIO
+        io: TapAPIController.TapSaveIO,
+        revertCheck: Boolean
     ): Either[ResponseEntity[String], TapConfig] = {
         // A tap may never reference a server-managed secret (field-protection
         // keys, API-key stores): its fields would be injected into the script.
@@ -1354,7 +1384,8 @@ class TapAPIController {
                         None
                 }
         val stamped =
-            if (readFailed.get) deduped.copy(inferredDependsOn = if (existing != null) existing.inferredDependsOn else null)
+            if (readFailed.get && revertCheck) deduped
+            else if (readFailed.get) deduped.copy(inferredDependsOn = if (existing != null) existing.inferredDependsOn else null)
             else
                 TapAPIController.stampInferredDependsOn(
                     deduped,
@@ -1378,7 +1409,9 @@ class TapAPIController {
         // the STORED tap only. Refused saves persist nothing and mint no version.
         // A catalog restore writes the tap disabled, so nothing can fire; the
         // gate applies on the save that enables it.
-        val gate = if (restored && !configToSave.enabled) None else TapCronGate.check(existing, configToSave)
+        // The recovery agent's revert puts back the script that was
+        // scheduled before the agent acted: never refused by the gate.
+        val gate = if (revertCheck || (restored && !configToSave.enabled)) None else TapCronGate.check(existing, configToSave)
         gate match {
             case Some(msg) =>
                 return Left(ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}"))
@@ -1390,7 +1423,9 @@ class TapAPIController {
         // A save that changes nothing (e.g. the config write that follows a
         // script store, which already versioned the new script) mints no
         // version and leaves the stored tap as it is.
-        // A version restore always mints a version.
+        // A version restore always mints a version. The revert's check writes
+        // nothing: its caller writes the checked config.
+        if (revertCheck) return Right(stamped)
         if (versionRestore.isEmpty && existing != null && TapScriptStoreVersioning.sameDefinition(existing, stamped)) return Right(existing)
         val note = if (versionRestore.isDefined) "restored from version " + versionRestore.get.version
         else if (changeNote != null && changeNote.nonEmpty) changeNote

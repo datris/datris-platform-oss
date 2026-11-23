@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.Executors
+import scala.util.control.NonFatal
 
 /** The closed recovery loop: observe → diagnose → propose → gate → execute
   * → verify → record.
@@ -183,9 +184,26 @@ object IncidentRunner {
     private val RehearsalPriorField = "rehearsalPriorTest"
 
     /** The direct restore inside revertIfNeeded: (incidentId, tapName,
-      * toVersion). Called only when the live version differs from the target. */
+      * toVersion). Called only when the live version differs from the target.
+      * Production ([[restoreTapVersion]]) puts back the stored pre-agent
+      * definition through the tap save path and records any note on the
+      * incident itself; it throws when the revert did not land. */
     @volatile private[incident] var revertTap: (String, String, Int) => Unit =
         (incidentId: String, tapName: String, toVersion: Int) => restoreTapVersion(incidentId, tapName, toVersion)
+
+    /** (tapName, version) => the stored version snapshot of the tap, None
+      * when there is none. */
+    @volatile private[incident] var tapVersionLookup: (String, Int) => Option[TapConfig] =
+        (name: String, version: Int) =>
+            EntityVersionIO.get(DatrisEnvironment.current.tapVersionTableName, name, version).map(v => gson.fromJson(v.config, classOf[TapConfig]))
+
+    /** Every store read and the versioned write of the tap revert, through
+      * the tap save path. */
+    @volatile private[incident] var revertSaveIO: ai.datris.api.TapAPIController.TapSaveIO = ai.datris.api.TapAPIController.ProductionSaveIO
+
+    /** How long the tap revert waits for the catalog lock before it writes
+      * without it (re-reading the tap just before the write). */
+    @volatile private[incident] var revertLockWaitMs: Long = 30000L
 
     /** Spec seam: the sweep's approval lookup (production PendingActionIO.get). */
     @volatile private[incident] var approvalLookup: String => Option[PendingAction] = (approvalId: String) => PendingActionIO.get(approvalId)
@@ -950,38 +968,134 @@ object IncidentRunner {
         }
     }
 
-    /** Production [[revertTap]]: write the stored version snapshot back over
-      * the live tap, keeping the live run stamps. */
-    private def restoreTapVersion(id: String, tapName: String, target: Int): Unit = {
-        val env = DatrisEnvironment.current
-        val live = TapConfigIO.read(env.tapTableName, tapName)
-        if (live == null) throw new DatrisException("tap " + tapName + " no longer exists")
-        val snapshot = EntityVersionIO.get(env.tapVersionTableName, tapName, target)
-            .getOrElse(throw new DatrisException("no stored snapshot of tap " + tapName + " version " + target))
-        val snap = gson.fromJson(snapshot.config, classOf[TapConfig])
-        val restored = snap.copy(
-            createdAt = live.createdAt,
-            createdByKeyLabel = live.createdByKeyLabel,
-            lastRunStatus = live.lastRunStatus,
-            lastRunTime = live.lastRunTime,
-            lastRunRecordCount = live.lastRunRecordCount,
-            lastRunError = live.lastRunError,
-            lastRunDataType = live.lastRunDataType,
-            lastRunColumns = live.lastRunColumns,
-            lastTestRunStatus = live.lastTestRunStatus,
-            lastTestRunTime = live.lastTestRunTime,
-            lastTestRunRecordCount = live.lastTestRunRecordCount,
-            lastTestRunError = live.lastTestRunError,
-            lastTestRunDataType = live.lastTestRunDataType,
-            lastTestRunColumns = live.lastTestRunColumns,
-            // The live stamp names the BAD script's identity; the
-            // reverted script is a different one. Drop the stamp so
-            // the tap falls back to the unstamped branch of
-            // TapCronGate (unrelated edits pass; the next cron change
-            // is grandfathered by the prior success).
-            lastTestRunScriptId = null
+    /** A read or write of the tap store itself failed during the revert:
+      * the revert fails (nothing is written in its place). */
+    private final class RevertStoreFailure(cause: Throwable)
+        extends RuntimeException(Option(cause.getMessage).getOrElse(cause.toString), cause)
+
+    private def revertStoreCall[T](f: => T): T =
+        try f
+        catch {
+            case e: RevertStoreFailure => throw e
+            case NonFatal(e) => throw new RevertStoreFailure(e)
+        }
+
+    /** The config the revert writes and the notes it records on the incident. */
+    private case class RevertDecision(config: TapConfig, notes: List[(String, String)])
+
+    private val RevertedAnyway = "The definition from before the agent's change was restored."
+
+    /** The body text of a save-path refusal: its `error` field, or the body. */
+    private def refusalText(r: org.springframework.http.ResponseEntity[String]): String = {
+        val body = Option(r.getBody).getOrElse("")
+        try {
+            val e = JsonParser.parseString(body).getAsJsonObject.get("error")
+            if (e != null && e.isJsonPrimitive) e.getAsString else body
+        } catch { case NonFatal(_) => body }
+    }
+
+    /** The pre-agent definition `snap` over `live` (rule: the live catalog,
+      * owner, enabled state, run, retry and test state, with no test-run
+      * stamp), checked by the tap save path. When the save rules refuse it,
+      * or a check cannot be made, it is still the config written, and a note
+      * says why. A tap-store failure is thrown. */
+    private def decideRevert(tapName: String, snap: TapConfig, live: TapConfig, target: Int, io: ai.datris.api.TapAPIController.TapSaveIO): RevertDecision = {
+        val candidate = ai.datris.api.EntityVersionAPIController.tapRestoreCandidate(tapName, snap, live).copy(lastTestRunScriptId = null)
+        val unchecked = scala.collection.mutable.ListBuffer.empty[String]
+        def why(e: Throwable): String = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        val checkIO = io.copy(
+            readTap = (n: String) => revertStoreCall(io.readTap(n)),
+            loadAll = () => revertStoreCall(io.loadAll()),
+            // A secret or script store that does not answer is a check that
+            // could not be made, not a refusal.
+            secretType = (n: String) =>
+                try io.secretType(n)
+                catch {
+                    case NonFatal(e) =>
+                        unchecked += "the secret store could not be read to check secret '" + n + "' (" + why(e) + ")"
+                        None
+                },
+            scriptExists = (t: TapConfig) =>
+                try io.scriptExists(t)
+                catch {
+                    case NonFatal(e) =>
+                        unchecked += "the script store could not be read to check that the script exists (" + why(e) + ")"
+                        true
+                },
+            writeVersioned = (_: TapConfig, _: String, _: String) => throw new IllegalStateException("the revert's check writes nothing")
         )
-        TapConfigIO.writeVersioned(restored, "incident " + id + ": reverted after failed verification", RecoveryKey.Label)
+        // Not accepted as a save: the definition itself, as the save path
+        // would stamp it.
+        def asIs: TapConfig = TapCronGate.normalizeCron(candidate.copy(updatedAt = ai.datris.api.TapAPIController.nowStamp()))
+        def uncheckedNotes: List[(String, String)] =
+            if (unchecked.isEmpty) Nil
+            else List("restored definition could not be fully checked" -> (unchecked.mkString("; ") + ". " + RevertedAnyway))
+        try new ai.datris.api.TapAPIController().checkTapRevert(candidate, live, target, checkIO) match {
+                case Right(checked) => RevertDecision(checked, uncheckedNotes)
+                case Left(refused) =>
+                    RevertDecision(
+                        asIs,
+                        ("restored definition would not be accepted as a new save" ->
+                            (refusalText(refused) + " " + RevertedAnyway + " Correct it and save the tap.")) :: uncheckedNotes
+                    )
+            }
+        catch {
+            case e: RevertStoreFailure => throw e
+            case NonFatal(e) =>
+                unchecked += "the save checks could not be completed (" + why(e) + ")"
+                RevertDecision(asIs, uncheckedNotes)
+        }
+    }
+
+    /** Production [[revertTap]]: put back the stored pre-agent definition
+      * (version `target`) through the tap save path, keeping the live tap's
+      * catalog, owner, enabled state, run, retry and test state and clearing
+      * the test-run stamp (it names the agent's script). The write waits at
+      * most [[revertLockWaitMs]] for the catalog lock, then goes ahead
+      * without it; either way the tap is re-read just before the write, and
+      * a tap moved, enabled, disabled or re-owned since the decision is
+      * decided again once on the fresh tap. Throws (nothing written) when the
+      * tap is gone, there is no stored snapshot, the tap store fails, or the
+      * tap changed again. */
+    private def restoreTapVersion(id: String, tapName: String, target: Int): Unit = {
+        val io = revertSaveIO
+        val note = "incident " + id + ": reverted after failed verification"
+        val live = revertStoreCall(io.readTap(tapName))
+        if (live == null) throw new DatrisException("tap " + tapName + " no longer exists")
+        val snap = tapVersionLookup(tapName, target)
+            .getOrElse(throw new DatrisException("no stored snapshot of tap " + tapName + " version " + target))
+        val waitMs = revertLockWaitMs
+
+        def attempt(decided: TapConfig, retried: Boolean): Unit = {
+            val decision = decideRevert(tapName, snap, decided, target, io)
+            val outcome = CatalogOps.withCatalogLockWithin(waitMs) { held =>
+                val fresh = revertStoreCall(io.readTap(tapName))
+                if (fresh == null) throw new DatrisException("tap " + tapName + " no longer exists")
+                if (!ai.datris.api.EntityVersionAPIController.sameTapGuardState(decided, fresh)) Left(fresh)
+                else {
+                    val toWrite = ai.datris.api.EntityVersionAPIController.tapRestoreWriteConfig(decision.config, fresh).copy(lastTestRunScriptId = null)
+                    revertStoreCall(io.writeVersioned(toWrite, note, RecoveryKey.Label))
+                    Right(held)
+                }
+            }
+            outcome match {
+                case Right(held) =>
+                    decision.notes.foreach { case (summary, detail) => step(id, "execute", summary, Some(clip(detail))) }
+                    if (!held)
+                        step(
+                            id,
+                            "execute",
+                            "revert written without the catalog lock",
+                            Some("Could not wait for a catalog operation in progress (waited " + waitMs + " ms); the tap was re-read just before the write.")
+                        )
+                case Left(fresh) if !retried => attempt(fresh, retried = true)
+                case Left(_) =>
+                    throw new DatrisException(
+                        "tap " + tapName + " changed while it was being reverted (catalog, owner or enabled state changed twice); nothing was written"
+                    )
+            }
+        }
+        attempt(live, retried = false)
     }
 
     // ------------------------------------------------------------------

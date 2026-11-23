@@ -94,7 +94,7 @@ The verdict decides what happens next:
 | `fail` | The record-count change, a null-rate increase or the DQ pass rate breached its limit. The incident closes as failed with nothing written to the real destination |
 | `needs-human` | A column was removed or a type changed and the policy does not allow it. The incident waits in `awaiting_approval` with the card; **Proceed to real run** (or `POST /api/v1/incidents/{id}/proceed`) lets a person accept the shape change. Agents may not proceed |
 
-If the real run fails verification, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown. `verifyMode: real` skips the rehearsal and goes straight to the real run.
+If the real run fails verification, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown. A tap revert puts back the tap's definition from before the agent's change and leaves its catalog, owner and enabled state as they are now, so a move or a pause someone made during the incident stays. If that definition would not pass today's save checks (for example its secret is no longer a tap secret, or a tap it depends on was deleted), the revert still happens and the incident says what to fix. `verifyMode: real` skips the rehearsal and goes straight to the real run.
 
 ## Schema drift incidents
 

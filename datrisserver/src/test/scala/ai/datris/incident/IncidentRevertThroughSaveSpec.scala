@@ -28,8 +28,10 @@ import scala.collection.mutable
   * catalog lock and proceeds while an ordered-enable job runs (D3). When the
   * save rules refuse the pre-agent definition, the revert still lands and the
   * incident says, in plain words, why the definition would not be accepted as
-  * a new save (lead ruling on D1); a store failure or a lock timeout fails the
-  * revert and the incident says so; no tap is ever half-written.
+  * a new save (lead ruling on D1); a tap-store failure fails the revert and
+  * the incident says so; a lock not obtained within the wait does not stop
+  * the revert (the incident says it wrote without the lock); no tap is ever
+  * half-written.
   *
   * The incident runs end to end on fakes (no Mongo, Vault, object store or
   * code repository): the existing runner seams plus the ones below, which
@@ -49,7 +51,7 @@ import scala.collection.mutable
   *     * tap save path. Production: TapAPIController.ProductionSaveIO. */
   *   @volatile private[incident] var revertSaveIO: TapAPIController.TapSaveIO
   *   /** How long the revert waits for CatalogOps' catalog lock before it
-  *     * fails ("revert failed", saying it could not get the lock). */
+  *     * writes without it (the incident says so). */
   *   @volatile private[incident] var revertLockWaitMs: Long
   * }
   * }}}
@@ -457,7 +459,10 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
         IncidentRunner.stampTest = (_: String, _: IncidentRunner.RehearsalStamp) => ()
         IncidentRunner.tapWrite = (_: TapConfig) => ()
         IncidentRunner.webhookSink = (payload: String) => ctx.webhooks.synchronized { ctx.webhooks += JsonParser.parseString(payload).getAsJsonObject; () }
-        IncidentEvidenceBuilder.realProfileOverride = (_: Incident, _: Option[RunProfile]) => Some(baseline.copy(runId = "run_real"))
+        // No real-run profile: judging one reads recent runs from the
+        // run-lineage store, which a client built by an earlier suite would
+        // wait 30 s on. Verification here is decided by the tap's health.
+        IncidentEvidenceBuilder.realProfileOverride = (_: Incident, _: Option[RunProfile]) => None
         if (install) installRevertSeams(store)
         try body(ctx)
         finally {
@@ -887,7 +892,7 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
         }
     }
 
-    test("lock timeout: a lock not released within the wait fails the revert, says so, writes nothing and does not hang") {
+    test("lock timeout: after the wait, the revert lands and the incident says it did not hold the lock; it does not hang") {
         val store = standardStore()
         scenario(store) { c =>
             IncidentRunner.revertLockWaitMs = 300L
@@ -895,12 +900,69 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
             holdLock(release)
             try runBounded(c, 20000L)
             finally release.countDown()
-            val st = c.revertFailed.getOrElse(fail("revert failed step: " + c.summaries))
-            assert(st.detail.exists(_.toLowerCase.contains("lock")), "names the lock: " + st)
-            assert(store.writeAttempts == 0, "no fallback write after a lock timeout")
-            assert(store.tap == c.liveBeforeRevert)
-            assert(!c.reverted, c.summaries)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assertAttribution(c, w)
+            assert(store.writeAttempts == 1, "one write")
+            assert(unstamped(w.config) == unstamped(expectedRevert(pre, c.liveBeforeRevert)), s"${w.config}")
+            val note = c.steps.find(s => c.stepText(s).toLowerCase.contains("lock"))
+            assert(note.isDefined, "names the lock: " + c.steps)
+            assert(c.stepText(note.get).contains("Could not wait for a catalog operation in progress"), note)
             assert(c.incident.state == Incident.Failed, c.incident.outcome)
+        }
+    }
+
+    test("a tap that changes again after the revert decided a second time fails the revert, says so and writes nothing") {
+        val store = standardStore()
+        scenario(store) { c =>
+            // Every check moves the tap: the decision is never current at the write.
+            val moves = new java.util.concurrent.atomic.AtomicInteger(0)
+            store.onLoadAll = () => {
+                val n = moves.incrementAndGet()
+                store.taps.synchronized { store.taps("prices") = store.taps("prices").copy(catalog = "Moved" + n, enabled = n % 2 == 0) }
+            }
+            IncidentRunner.runIncident(c.id)
+            assert(moves.get == 2, "decided twice: " + moves.get)
+            val st = c.revertFailed.getOrElse(fail("revert failed step: " + c.summaries))
+            assert(st.detail.exists(_.contains("changed while it was being reverted")), st)
+            assert(store.writeAttempts == 0, "nothing written")
+            assert(!c.reverted, c.summaries)
+            assert(store.tap.catalog == "Moved2" && store.tap.scriptPath == "tap-scripts/prices_agent.py", s"${store.tap}")
+        }
+    }
+
+    test("a secret store that does not answer is a check that could not be made: the revert lands and the incident says so") {
+        val withSecret = pre.copy(secretName = "weather")
+        val store = new TapStore(Seq(withSecret), Map(("prices", 3) -> withSecret), scripts = scripts) {
+            override lazy val io: TapAPIController.TapSaveIO =
+                TapAPIController.TapSaveIO(
+                    readTap = n => taps.synchronized(taps.get(n).orNull),
+                    readPipeline = _ => null,
+                    secretType = _ => throw new RuntimeException("vault sealed"),
+                    scriptExists = _ => throw new RuntimeException("object store timeout"),
+                    readScript = _ => None,
+                    loadAll = () => (taps.synchronized(taps.values.toList), Nil),
+                    writeVersioned = (t, note, actor) => {
+                        writeAttempts += 1
+                        writes.synchronized { writes += Write(t, note, actor, catalogLockHeld()) }
+                        taps.synchronized { val s = t.copy(version = taps(t.name).version + 1); taps(t.name) = s; s }
+                    }
+                )
+        }
+        scenario(store) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.revertFailed.isEmpty, c.summaries)
+            assert(c.reverted, c.summaries)
+            val w = onlyWrite(c)
+            assertAttribution(c, w)
+            assert(unstamped(w.config) == unstamped(expectedRevert(withSecret, c.liveBeforeRevert)), s"${w.config}")
+            val text = c.steps.map(c.stepText).mkString("\n")
+            assert(text.contains("could not be fully checked"), text)
+            assert(text.contains("vault sealed") && text.contains("object store timeout"), text)
+            assert(!text.contains("not a tap secret") && !text.contains("which is a platform secret"), text)
+            assert(!text.contains("Tap script not found"), text)
+            assert(!text.contains("would not be accepted"), text)
         }
     }
 

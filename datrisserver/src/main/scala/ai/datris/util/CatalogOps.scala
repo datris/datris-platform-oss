@@ -163,6 +163,25 @@ object CatalogOps {
         finally catalogLock.unlock()
     }
 
+    /** [[withCatalogLock]] waiting at most `waitMs` for the lock: `body` gets
+      * true when it runs holding the lock, false when the lock was not
+      * obtained in time (or the wait was interrupted) and it runs without
+      * it. For a caller that must act even while a catalog operation runs
+      * (the recovery agent's tap revert). */
+    def withCatalogLockWithin[T](waitMs: Long)(body: Boolean => T): T = {
+        val held =
+            try catalogLock.tryLock(math.max(0L, waitMs), java.util.concurrent.TimeUnit.MILLISECONDS)
+            catch {
+                case _: InterruptedException =>
+                    Thread.currentThread().interrupt()
+                    false
+            }
+        if (!held) body(false)
+        else
+            try body(true)
+            finally catalogLock.unlock()
+    }
+
     /** `warnings` are follow-up notes per item (name -> message) from a write
       * that succeeded, e.g. a Unity Catalog table Datris could not drop. */
     case class Result(ok: Seq[String], failed: Seq[(String, String)], warnings: Seq[(String, String)] = Nil)
