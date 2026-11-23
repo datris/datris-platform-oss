@@ -36,3 +36,26 @@ function errorField(text: string): string | null {
   }
   return null;
 }
+
+/**
+ * Like httpErrorText, but a capability-denied refusal (`errorKind:
+ * "capability_denied"`, whose `error` is only "capability denied") shows the
+ * server's explanatory `message` instead. Every other error gives exactly
+ * httpErrorText's text. Used where a refusal names the permission the
+ * caller lacks (validation schema generation).
+ */
+export function httpErrorExplanation(err: any, fallback = ''): string {
+  let body = err?.error;
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body);
+    } catch {
+      body = null;
+    }
+  }
+  if (body && typeof body === 'object' && body.errorKind === 'capability_denied'
+      && typeof body.message === 'string' && body.message.trim()) {
+    return body.message;
+  }
+  return httpErrorText(err, fallback);
+}

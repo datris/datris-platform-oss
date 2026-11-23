@@ -22,22 +22,19 @@ import scala.collection.mutable
 /** Story: Generating a validation schema needs the right to author pipelines
   * and never replaces a schema another pipeline depends on
   * (plans/stories/generate-schema-write-authority.md). Owner decisions D2 (a):
-  * a stored schema that pipelines use is replaced only when the caller may
-  * update every one of them; D3: the refusal names no pipeline, for every
+  * a schema name that pipelines use, stored or not yet stored, is written
+  * only when the caller may update every one of them; D3: the refusal names no pipeline, for every
   * caller. The route's capability (D1) is pinned in
   * GenerateSchemaRouteAuthoritySpec.
   *
-  * The handler reads the object store, the pipeline configs and the model, so
-  * it gets a seam the Spring method delegates to (the same style as
-  * `CatalogEnableJob.Deps`); the live implementation uses
+  * The handler reads the pipeline configs, calls the model and writes the
+  * object store, so it gets a seam the Spring method delegates to (the same
+  * style as `CatalogEnableJob.Deps`); the live implementation uses
   * `ObjectStoreUtil`, `PipelineConfigIO.readAll` and
   * `AISchemaUtil.generateJsonSchema` / `generateXsdSchema`:
   * {{{
   * object ConfigAPIController {
   *   trait GenerateSchemaDeps {
-  *     /** True when an object is stored at exactly bucket/key (not a prefix
-  *       * match). Throws when the store cannot be read. */
-  *     def exists(bucket: String, key: String): Boolean
   *     /** Every stored pipeline config. Throws when they cannot be read. */
   *     def pipelines(): Seq[PipelineConfig]
   *     /** The model call; schemaType is "json-schema" or "xsd". */
@@ -46,13 +43,15 @@ import scala.collection.mutable
   *   }
   *   /** POST /config/generate-schema after the key check: the request
   *     * checks of parseGenerateSchema (400, unchanged), then the in-use rule,
-  *     * then the model and the write. A failed exists or pipelines read is a
+  *     * then the model and the write. A failed pipelines read is a
   *     * 500 with nothing generated or written. */
   *   def generateSchemaWith(request: HttpServletRequest, body: String, deps: GenerateSchemaDeps): ResponseEntity[String]
   *   /** Pure: Some(409 {"error": "A validation schema named '<file>' is
-  *     * already in use. Choose another schema name."}) when `exists` and some
-  *     * pipeline of `referencing` fails `mayUpdate`; None otherwise. */
-  *   def schemaOverwriteRefusal(file: String, exists: Boolean, referencing: Seq[PipelineConfig],
+  *     * already in use. Choose another schema name."}) when some pipeline of
+  *     * `referencing` fails `mayUpdate`, whether or not the file is stored
+  *     * yet (a pipeline naming a file not yet stored would start validating
+  *     * against it); None otherwise. */
+  *   def schemaOverwriteRefusal(file: String, referencing: Seq[PipelineConfig],
   *                              mayUpdate: PipelineConfig => Boolean): Option[ResponseEntity[String]]
   * }
   * }}}
@@ -93,18 +92,15 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
     private val GeneratedSchema = """{"$schema":"http://json-schema.org/draft-04/schema#","type":"array"}"""
     private val GeneratedXsd = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"/>"""
 
+    /** `stored` names what the store holds in each scenario; the in-use rule
+      * does not depend on it, so the handler never reads it. */
     private class FakeDeps(
-        stored: Set[String] = Set.empty,
+        val stored: Set[String] = Set.empty,
         configs: Seq[PipelineConfig] = Nil,
-        existsFails: Boolean = false,
         pipelinesFail: Boolean = false
     ) extends GenerateSchemaDeps {
         val generated = mutable.ArrayBuffer[(String, String)]()
         val written = mutable.ArrayBuffer[(String, String, String)]()
-        override def exists(bucket: String, key: String): Boolean = {
-            if (existsFails) throw new RuntimeException("object store unavailable")
-            bucket == Bucket && stored.contains(key)
-        }
         override def pipelines(): Seq[PipelineConfig] = {
             if (pipelinesFail) throw new RuntimeException("pipeline configs unavailable")
             configs
@@ -309,11 +305,7 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ------------------------------------------------------------ failures and order
 
-    test("a failed existence or pipeline read is a 500 with nothing generated or written") {
-        val e = new FakeDeps(stored = Stored, configs = Seq(hrPayroll), existsFails = true)
-        val r1 = generateSchemaWith(editor, body(), e)
-        assert(status(r1) == 500, r1.getBody)
-        assert(e.untouched)
+    test("a failed pipeline read is a 500 with nothing generated or written") {
         val p = new FakeDeps(stored = Stored, configs = Seq(hrPayroll), pipelinesFail = true)
         val r2 = generateSchemaWith(editor, body(), p)
         assert(status(r2) == 500, r2.getBody)
@@ -345,19 +337,30 @@ class GenerateSchemaAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ------------------------------------------------------------ the pure rule
 
-    test("schemaOverwriteRefusal: refused only for an existing file used by a pipeline the caller may not update") {
+    test("schemaOverwriteRefusal: refused exactly when a pipeline the caller may not update uses the name") {
         val yes: PipelineConfig => Boolean = _ => true
         val no: PipelineConfig => Boolean = _ => false
         val onlyMarketing: PipelineConfig => Boolean = _.catalog == "Marketing"
-        assert(schemaOverwriteRefusal("orders.json", exists = false, Nil, no).isEmpty)
-        assert(schemaOverwriteRefusal("orders.json", exists = true, Nil, no).isEmpty)
-        assert(schemaOverwriteRefusal("orders.json", exists = true, Seq(mktOrders, hrPayroll), yes).isEmpty)
-        assert(schemaOverwriteRefusal("orders.json", exists = true, Seq(mktOrders), onlyMarketing).isEmpty)
-        val r = schemaOverwriteRefusal("orders.json", exists = true, Seq(mktOrders, hrPayroll), onlyMarketing)
+        assert(schemaOverwriteRefusal("orders.json", Nil, no).isEmpty)
+        assert(schemaOverwriteRefusal("orders.json", Seq(mktOrders, hrPayroll), yes).isEmpty)
+        assert(schemaOverwriteRefusal("orders.json", Seq(mktOrders), onlyMarketing).isEmpty)
+        val r = schemaOverwriteRefusal("orders.json", Seq(mktOrders, hrPayroll), onlyMarketing)
         assert(r.isDefined)
         assert(status(r.get) == 409)
         assert(r.get.getBody == ApiErrors.errorBody(InUse), r.get.getBody)
         assert(!r.get.getBody.contains("hr_payroll_feed"))
-        assert(schemaOverwriteRefusal("orders.json", exists = true, Seq(salesOrders), no).get.getBody == r.get.getBody)
+        assert(schemaOverwriteRefusal("orders.json", Seq(salesOrders), no).get.getBody == r.get.getBody)
+    }
+
+    test("a name a pipeline the caller may not update uses is refused even before the file is stored") {
+        // The pipeline names a file that does not exist yet; generating it
+        // would start that pipeline validating against the caller's schema.
+        val notStored = new FakeDeps(stored = Set.empty, configs = Seq(mktOrders, hrPayroll))
+        assertInUse(generateSchemaWith(marketingKey, body(), notStored), notStored)
+        val viaBob = new FakeDeps(stored = Set.empty, configs = Seq(salesOrders))
+        assertInUse(generateSchemaWith(bob, body(), viaBob), viaBob)
+        // A name only the caller's own pipelines use, not stored yet: allowed.
+        val own = new FakeDeps(stored = Set.empty, configs = Seq(mktOrders))
+        assertAllowed(generateSchemaWith(marketingKey, body(), own), own)
     }
 }

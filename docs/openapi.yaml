@@ -4962,7 +4962,7 @@ paths:
     post:
       tags: [Configuration]
       summary: AI-generate a validation schema
-      description: Uses AI to generate a JSON Schema (Draft 4) or W3C XSD from sample data. The schema is stored in MinIO.
+      description: Uses AI to generate a JSON Schema (Draft 4) or W3C XSD from sample data. The schema is stored in MinIO. Requires `pipeline:update` (any scope). A name used by a pipeline the caller may not update, whether or not its file is stored yet, is refused with 409.
       requestBody:
         required: true
         content:
@@ -4994,8 +4994,12 @@ paths:
                     type: string
         '400':
           description: 'The body is not valid JSON or not a JSON object; `type`, `name` or `sampleData` is missing, null or not a string; `type` is not `json-schema` or `xsd`; `name` or `sampleData` is blank; or `name` is not a usable file name. Refused before the model is called. Body: `{"error": ...}`'
+        '403':
+          description: 'The caller does not hold `pipeline:update` (`errorKind: capability_denied`). Nothing is generated or stored.'
+        '409':
+          description: 'A pipeline the caller may not update uses this schema name. Body: `{"error": "A validation schema named ''<name>.json'' is already in use. Choose another schema name."}` (`.xsd` for an XSD). Names no pipeline and is the same for every caller; refused before the model is called, nothing is stored.'
         '500':
-          description: 'Model or storage failure. Body: `{"error": ...}`'
+          description: 'Model or storage failure, or the stored pipelines could not be read. Nothing is stored. Body: `{"error": ...}`'
 
   # ── Taps (Beta) ──────────────────────────────────────────
 

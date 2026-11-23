@@ -2247,7 +2247,8 @@ def _base_tools():
                 "Delete a catalog by moving every tap and pipeline in it to Uncataloged and removing the catalog. "
                 "No tap, pipeline or data is deleted. Call this ONLY when the user has explicitly asked to delete that catalog. "
                 "Uncataloged itself cannot be deleted. If the caller may not move every item, or (for an API key) may not write them in "
-                "Uncataloged, the delete is refused with 403 and nothing changes; a key limited to one catalog cannot delete it. Items that "
+                "Uncataloged, the delete is refused with 403 and nothing changes; a key limited to one catalog cannot delete it while it holds "
+                "taps or pipelines (a catalog with no items still deletes). Items that "
                 "could not be moved for another reason come back under `failed` (the rest still move); report them to the user. Deleting a catalog together with its items and their data is available via the API or UI, "
                 "not through this tool."
             ),

@@ -15,7 +15,8 @@ case class AuditRoute(category: String, action: String, resourceType: String)
   *
   * Reuses [[CapabilityRoutes]] as the source of truth — an audit category IS
   * the capability resource, an audit action IS the capability action (one
-  * exception, `actionOverrides`: a pipeline rename) — so there is one route
+  * exception, `actionOverrides`: a pipeline rename; and one route whose
+  * resource type differs, `resourceTypeOverrides`) — so there is one route
   * table to keep complete, not two. The small supplemental
   * table below covers the routes the capability check deliberately skips
   * (login, users, keys) because they are gated by role rather than by key.
@@ -78,6 +79,15 @@ object AuditClassifier {
         ("POST", "/api/v1/pipelines/*/rename", "rename")
     )
 
+    /** Capability-mapped routes whose object is not the capability
+      * resource: generating a validation schema is checked as
+      * `pipeline:update` but writes a schema file, so its row reads
+      * `pipeline / update / validation-schema` (the controller adds the
+      * file name as `metadata.file`). */
+    private val resourceTypeOverrides: Seq[(String, String, String)] = Seq(
+        ("POST", "/api/v1/config/generate-schema", "validation-schema")
+    )
+
     private def isNeverAudited(method: String, path: String): Boolean =
         neverAudited.exists { case (m, pattern, _) => m == method && matcher.`match`(pattern, path) }
 
@@ -97,7 +107,9 @@ object AuditClassifier {
                 if (isRead(resource, action) && !logReads && resource != "secret") None
                 else {
                     val audited = actionOverrides.collectFirst { case (om, p, a) if om == m && matcher.`match`(p, path) => a }.getOrElse(action)
-                    Some(AuditRoute(resource, audited, resource))
+                    val resourceType =
+                        resourceTypeOverrides.collectFirst { case (om, p, t) if om == m && matcher.`match`(p, path) => t }.getOrElse(resource)
+                    Some(AuditRoute(resource, audited, resourceType))
                 }
 
             case RouteCheck.Skip =>

@@ -132,6 +132,7 @@ Via API:
 
 ```bash
 curl -X POST "http://localhost:8080/api/v1/config/generate-schema" \
+  -H "x-api-key: $DATRIS_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "type": "json-schema",
@@ -141,6 +142,8 @@ curl -X POST "http://localhost:8080/api/v1/config/generate-schema" \
 ```
 
 Valid types: `json-schema` (generates Draft 4 JSON Schema) and `xsd` (generates W3C XSD). The generated schema is stored at `{environment}-config/validation-schema/{name}.json` or `{name}.xsd`.
+
+Generating a schema is a pipeline change: it needs an API key holding `pipeline:update`, or a signed-in admin or editor (an editor [limited to catalogs](/user-auth#catalog-access) needs edit or own on at least one). Schema names are shared across all pipelines, so a name already used by a pipeline you may not update, whether or not its file is stored yet, is refused with `409` and nothing is generated; choose another name. Regenerating the schema of pipelines you may update, under the same name, replaces it. Under an [agent policy](/agent-policy) that requires approval for `pipeline:update`, an agent key's call to this endpoint is queued for approval like any other pipeline update; people signed in to the UI are never queued.
 
 ## Schema Evolution
 

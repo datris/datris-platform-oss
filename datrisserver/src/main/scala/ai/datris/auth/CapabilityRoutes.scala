@@ -209,7 +209,10 @@ object CapabilityRoutes {
         // and so are scope-limited API keys (InstallWideForLimited).
         Route("GET", "/api/v1/metadata/**", "metadata", "read"),
         Route("GET", "/api/v1/vector-stores/available", "metadata", "read"),
-        Route("POST", "/api/v1/config/generate-schema", "metadata", "read"),
+        // Generating a validation schema stores the file pipelines validate
+        // against, so it is a pipeline change: pipeline:update. The handler
+        // also refuses a name used by a pipeline the caller may not update.
+        Route("POST", "/api/v1/config/generate-schema", "pipeline", "update"),
 
         // Config
         Route("POST", "/api/v1/config/upload", "config", "write"),

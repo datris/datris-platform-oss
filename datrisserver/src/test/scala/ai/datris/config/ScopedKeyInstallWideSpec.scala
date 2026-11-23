@@ -729,7 +729,9 @@ class ScopedKeyInstallWideSpec extends AnyFunSuite with BeforeAndAfterEach {
         ("POST", "/api/v1/search/**") -> PerItem,
         ("GET", "/api/v1/metadata/**") -> Refused,
         ("GET", "/api/v1/vector-stores/available") -> Allowed("names which vector store kinds are up; no collection, table, pipeline or tap"),
-        ("POST", "/api/v1/config/generate-schema") -> NoData,
+        ("POST", "/api/v1/config/generate-schema") -> Allowed(
+            "reads stored pipelines only to refuse a schema name used by one the caller may not update (pipeline:update per pipeline, controller); returns none of them"
+        ),
         ("POST", "/api/v1/config/upload") -> OwnCap,
         ("GET", "/api/v1/ai/model-catalog") -> OwnCap,
         ("GET", "/api/v1/ai/models") -> OwnCap,

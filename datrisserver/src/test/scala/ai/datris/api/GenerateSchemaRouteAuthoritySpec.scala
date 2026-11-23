@@ -168,6 +168,17 @@ class GenerateSchemaRouteAuthoritySpec extends AnyFunSuite with BeforeAndAfterEa
         } finally TapRunTokens.revoke(token)
     }
 
+    test("the audit row records a validation schema, not a pipeline, and is written whether or not reads are logged") {
+        val expected = Some(ai.datris.audit.AuditRoute("pipeline", "update", "validation-schema"))
+        assert(ai.datris.audit.AuditClassifier.classify("POST", Path, logReads = false) == expected)
+        assert(ai.datris.audit.AuditClassifier.classify("POST", Path, logReads = true) == expected)
+        // Other pipeline:update routes keep the pipeline resource type.
+        assert(
+            ai.datris.audit.AuditClassifier.classify("POST", "/api/v1/pipeline/dest-types", logReads = false) ==
+                Some(ai.datris.audit.AuditRoute("pipeline", "update", "pipeline"))
+        )
+    }
+
     // ------------------------------------------------------------ unchanged guards: the other routes
 
     test("config upload and the other schema routes keep their requirements") {
