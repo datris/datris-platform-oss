@@ -125,7 +125,8 @@ object HiddenTapScrub {
       * name or word is left alone; a dot after a name ends it, so
       * `<name>.csv` and `<name>.public` read `[hidden].csv` and
       * `[hidden].public`. Every name in `keep` (the names of items the
-      * caller may read) is left whole where it stands, so a visible name
+      * caller may read) is left whole where it stands (in its exact spelling
+      * only, when a hidden name differs from it by letter case), so a visible name
       * holding a dot (`hr.eu`) is never cut by a shorter hidden one (`hr`);
       * at a position the longest name wins. One pass, so a placeholder is
       * never nested. Null stays null; `text` itself when both hidden sets
@@ -154,8 +155,11 @@ object HiddenTapScrub {
       * or the next char cannot continue a name (a dot, a space, punctuation).
       * A hidden tap name is also replaced in a `tap-<name>.csv|json` feed
       * file and a `tap-docs/<name>/` path. A kept name found there is copied
-      * as it is and the scan resumes after it; a kept name and a hidden name
-      * of the same spelling (in any case) count as kept. An existing
+      * as it is and the scan resumes after it. A name that is only kept is
+      * kept in every spelling; a name that is only hidden is replaced in
+      * every spelling; a name that is both kept and hidden (in some letter
+      * case) is kept only where the text equals one of its kept spellings
+      * exactly, and replaced in any other spelling. An existing
       * [[Placeholder]] in the text is passed over whole. Not thread-safe
       * (its counters); use one per response. */
     final class NameScrubber(hiddenTaps: Set[String], hiddenPipelines: Set[String], keep: Set[String] = Set.empty) {
@@ -164,6 +168,8 @@ object HiddenTapScrub {
             var name = false
             var tap = false
             var kept = false
+            // the exact kept spellings of this name, set when it is kept
+            var keptSpellings: java.util.HashSet[String] = null
         }
         private val root = new Node
         private val hiddenEnds = scala.collection.mutable.LinkedHashSet[Node]()
@@ -179,8 +185,11 @@ object HiddenTapScrub {
                     node = child
                     k += 1
                 }
-                if (isKept) node.kept = true
-                else {
+                if (isKept) {
+                    node.kept = true
+                    if (node.keptSpellings == null) node.keptSpellings = new java.util.HashSet[String](2)
+                    node.keptSpellings.add(n)
+                } else {
                     node.name = true
                     if (isTap) node.tap = true
                     hiddenEnds += node
@@ -189,9 +198,10 @@ object HiddenTapScrub {
         Option(hiddenTaps).getOrElse(Set.empty).foreach(add(_, isTap = true, isKept = false))
         Option(hiddenPipelines).getOrElse(Set.empty).foreach(add(_, isTap = false, isKept = false))
         Option(keep).getOrElse(Set.empty).foreach(add(_, isTap = false, isKept = true))
-        private val count = hiddenEnds.count(!_.kept)
+        private val count = hiddenEnds.size
 
-        /** Distinct hidden names held (in lower case), less those also kept. */
+        /** Distinct hidden names held (in lower case); a name that is also
+          * kept counts, as its other spellings are replaced. */
         def size: Int = count
 
         /** True when no hidden name is held: every text comes back as it is. */
@@ -247,7 +257,9 @@ object HiddenTapScrub {
                 val (end, n) = rest.head
                 tested += 1
                 val inContext = (feed && feedEnd(text, end)) || (docs && startsAt(text, end, "/"))
-                if (n.kept) {
+                // a name both kept and hidden is kept only in an exact kept spelling
+                val keptHere = n.kept && (!n.name || n.keptSpellings.contains(text.substring(i, end)))
+                if (keptHere) {
                     if ((wholeStart && wholeEnd(text, end)) || inContext) return -(end - i)
                 } else {
                     if (wholeStart && wholeEnd(text, end)) return end - i

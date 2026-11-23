@@ -7,7 +7,7 @@ Each sequence ends with verification by token. Say that data landed only after t
 1. `list_pipelines`. If one fits, skip to 3.
 2. `create_pipeline` with the file as the sample, a destination, and the project's `catalog`. Keep the config to source plus destination unless the user asked for rules or transformations.
 3. `upload_data` with the content.
-4. `get_job_status` with the returned token. Poll with `wait_seconds` until `rollup.allDone`. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that. Read `rollup.status`; on `error` or `warning`, `rollup.jobs[].lastError` names the failing step.
+4. `get_job_status` with the returned token. Poll with `wait_seconds` until `rollup.allDone`. Read `rollup.status`; on `error` or `warning`, `rollup.jobs[].lastError` names the failing step. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that.
 
 ## Onboard an external source with a tap
 

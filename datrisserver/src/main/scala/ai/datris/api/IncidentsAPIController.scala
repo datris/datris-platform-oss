@@ -252,18 +252,24 @@ object IncidentsAPIController {
     /** The free-text scrubber for a limited identity `rk`: the names of
       * stored pipelines and taps it may not read, with the previous names of
       * those pipelines ([[ai.datris.util.PipelineAliases.previousNamesOf]]),
-      * are replaced; every name a stored item it may read carries (of either
-      * kind, a readable pipeline's previous names included) is kept whole,
-      * so a visible name is never replaced or cut. Built once per response. */
+      * are replaced. Kept whole: the current name of every pipeline and tap
+      * it may read, and a readable pipeline's previous names except any a
+      * hidden pipeline now carries (a contested name fails closed, as
+      * [[ai.datris.util.PipelineAliases.shownRecordNames]] does). So a
+      * visible name is never replaced or cut, and a hidden pipeline's
+      * current name is never shown. A kept name that a hidden one differs
+      * from only by letter case is kept in its exact spelling only
+      * ([[HiddenTapScrub.NameScrubber]]). Built once per response. */
     def nameScrubberFor(rk: ResolvedKey, items: StoredItems): HiddenTapScrub.NameScrubber = {
         import ai.datris.util.PipelineAliases
         val ps = Option(items).map(_.pipelines).getOrElse(Nil).filter(p => p != null && p.name != null && p.name.nonEmpty)
         val ts = Option(items).map(_.taps).getOrElse(Nil).filter(t => t != null && t.name != null && t.name.nonEmpty)
         val (shownP, hiddenP) = ps.partition(p => pipelineReadable(rk, p))
         val (shownT, hiddenT) = ts.partition(t => CallerVisibility.mayReadStored(Some(rk), "tap", t.catalog, t.createdByKeyLabel))
-        def namesOf(p: PipelineConfig): Seq[String] = p.name +: PipelineAliases.previousNamesOf(p)
-        val visible = shownP.flatMap(namesOf).toSet ++ shownT.map(_.name)
-        new HiddenTapScrub.NameScrubber(hiddenT.map(_.name).toSet -- visible, hiddenP.flatMap(namesOf).toSet -- visible, visible)
+        val hiddenCurrent = hiddenP.map(_.name).toSet
+        val kept = shownP.map(_.name).toSet ++ shownT.map(_.name) ++ (shownP.flatMap(PipelineAliases.previousNamesOf).toSet -- hiddenCurrent)
+        val hiddenPipelineNames = hiddenP.flatMap(p => p.name +: PipelineAliases.previousNamesOf(p)).toSet
+        new HiddenTapScrub.NameScrubber(hiddenT.map(_.name).toSet -- kept, hiddenPipelineNames -- kept, kept)
     }
 
     /** `i` with hidden names replaced in its free text (step `summary` and

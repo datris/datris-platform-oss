@@ -265,12 +265,24 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
         assert(scrub("hr.eu", Set.empty, Set("hr")) == "[hidden].eu")
     }
 
-    test("D1: hidden names are found in any letter case; a kept name protects every spelling of itself") {
+    test("D1: hidden names are found in any letter case; a kept name no hidden name shares protects every spelling of itself") {
         assert(scrub("Payroll failed; PAYROLL retried; payroll ok", Set.empty, Set("payroll")) == "[hidden] failed; [hidden] retried; [hidden] ok")
         assert(scrub("Tap HR_Feed sent tap-HR_FEED.csv", Set("hr_feed"), Set.empty) == "Tap [hidden] sent tap-[hidden].csv")
-        // a kept name and a hidden name of the same spelling count as kept, in every case
-        assert(scrub("Orders and ORDERS and orders", Set.empty, Set("ORDERS"), keep = Set("orders")) == "Orders and ORDERS and orders")
+        // a name that is only kept is kept in every spelling
+        assert(scrub("Orders and ORDERS and orders", Set.empty, Set("payroll"), keep = Set("orders")) == "Orders and ORDERS and orders")
+        // a kept name and a hidden name differing only by letter case: only the exact kept spelling is kept
+        assert(scrub("Orders and ORDERS and orders", Set.empty, Set("ORDERS"), keep = Set("orders")) == "[hidden] and [hidden] and orders")
         assert(scrub("HR.EU and hr.Eu stay; HR goes", Set.empty, Set("hr"), keep = Set("hr.eu")) == "HR.EU and hr.Eu stay; [hidden] goes")
+    }
+
+    test("D1: a visible pipeline and a hidden pipeline whose names differ only by letter case: the visible spelling is kept, every other spelling replaced") {
+        val visibleUpper = pipe("Orders", "Sales", owner = "own")
+        val hiddenLower = pipe("orders", "HR")
+        val both = IncidentsAPIController.StoredItems(Seq(visibleUpper, hiddenLower), Nil)
+        for ((who, rk) <- limited) {
+            val names = IncidentsAPIController.nameScrubberFor(rk, both)
+            assert(names("Orders ran; orders failed; ORDERS retried") == "Orders ran; [hidden] failed; [hidden] retried", who)
+        }
     }
 
     test("D1: names holding regex-special characters are matched literally and the replacement is literal") {
@@ -456,6 +468,18 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
                 str(steps(o).head, "summary") == "[hidden] and [hidden].csv stale; orders_legacy and shared_old fine; [hidden] stale",
                 who + ": " + o
             )
+        }
+    }
+
+    test("D1: a visible pipeline's previous name that a hidden pipeline now carries is replaced") {
+        // the visible orders was once named payroll_now, the name the hidden hr_payroll carries now
+        val renamedVisible = orders.copy(previousNames = java.util.Arrays.asList("payroll_now", "orders_legacy"))
+        val hiddenNow = hrPayroll.copy(name = "payroll_now")
+        val stored = IncidentsAPIController.StoredItems(Seq(renamedVisible, ordersEu, hiddenNow, pay), taps)
+        val inc = namingVisible.copy(steps = List(IncidentStep(t0, "diagnose", "payroll_now stale; orders_legacy and orders fine")))
+        for ((who, rk) <- limited) {
+            val o = IncidentsAPIController.shownIncident(req(rk), inc, readPipeline, readTap, run = noRuns, items = () => stored).toPublicJson
+            assert(str(steps(o).head, "summary") == "[hidden] stale; orders_legacy and orders fine", who + ": " + o)
         }
     }
 
