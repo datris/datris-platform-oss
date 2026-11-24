@@ -351,8 +351,13 @@ object SnowflakeQueryUtil {
     private[util] val CORTEX_DATABASE = "SNOWFLAKE"
     private[util] val CORTEX_SCHEMA = "CORTEX"
 
-    /** Unqualified names refused as calls. */
-    private[util] val CALL_ONLY_SERVICE_FUNCTIONS: Seq[String] = Seq("CORTEX_SEARCH_BATCH")
+    /** Unqualified names refused as calls. CORTEX_SEARCH_BATCH queries a
+      * search service. EXECUTE_AI_EVALUATION starts, cancels or deletes an
+      * agent evaluation run (vendor function index, "System functions
+      * (Control)", read 2026-11-24); its documented examples use CALL, which
+      * is already refused, and whether a SELECT form works is UNCONFIRMED
+      * (refused regardless). */
+    private[util] val CALL_ONLY_SERVICE_FUNCTIONS: Seq[String] = Seq("CORTEX_SEARCH_BATCH", "EXECUTE_AI_EVALUATION")
 
     /** Every non-ASCII code point that some case rule maps to ASCII letters,
       * with those letters in upper case: `toUpperCase` / `toLowerCase`

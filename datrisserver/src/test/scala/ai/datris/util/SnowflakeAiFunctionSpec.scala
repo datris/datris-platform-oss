@@ -141,9 +141,9 @@ class SnowflakeAiFunctionSpec extends AnyFunSuite {
 
     // The wide gap set the story names, plus line comments holding a control
     // or separator character (a reading in which the comment runs past it is taken).
-    private val Gaps = Seq(" ", "\t", "\n", " ", "　", " ", "​", "\u0001", "//x\n", "//x ")
-    private val CommentInnerEnds = Seq("\t", "\r", "\u000B", "\u000C", "\u0001", "\u0000", "\u0085", " ", " ")
-    private val AllGaps = Gaps ++ CommentInnerEnds.map(c => "//x" + c + "y\n") ++ Seq("  //a\n //b\n  ", " //x\u0001y\n​")
+    private val Gaps = Seq(" ", "\t", "\n", "\u00A0", "\u3000", "\u2003", "\u200B", "\u0001", "//x\n", "//x\u2028")
+    private val CommentInnerEnds = Seq("\t", "\r", "\u000B", "\u000C", "\u0001", "\u0000", "\u0085", "\u2028", "\u2029")
+    private val AllGaps = Gaps ++ CommentInnerEnds.map(c => "//x" + c + "y\n") ++ Seq("  //a\n //b\n  ", "\u00A0//x\u0001y\n\u200B")
 
     test("whitespace of the wide set or a line comment around the dots or before the parenthesis does not hide a call") {
         AllGaps.foreach { g =>
@@ -179,22 +179,22 @@ class SnowflakeAiFunctionSpec extends AnyFunSuite {
 
     test("a letter that only Unicode case rules fold to ASCII does not hide a name") {
         // the long s, U+017F, in place of S
-        refusedAs("SELECT ſNOWFLAKE.CORTEX.COMPLETE('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
-        refusedAs("SELECT ſnowflake.cortex.complete('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
-        refusedAs("SELECT snowflake.cortex.ſentiment(a) FROM t", "SNOWFLAKE.CORTEX.SENTIMENT")
-        refusedAs("SELECT AI_CLAſſIFY(a, ['x', 'y'])", "AI_CLASSIFY")
-        refusedAs("SELECT ai_claſſify(a, ['x', 'y'])", "AI_CLASSIFY")
-        refusedAs("SELECT * FROM TABLE(CORTEX_ſEARCH_BATCH(service_name => 's'))", "CORTEX_SEARCH_BATCH")
-        refusedAs("SELECT m!FORECAſT(FORECASTING_PERIODS => 3)", "!FORECAST")
+        refusedAs("SELECT \u017FNOWFLAKE.CORTEX.COMPLETE('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
+        refusedAs("SELECT \u017Fnowflake.cortex.complete('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
+        refusedAs("SELECT snowflake.cortex.\u017Fentiment(a) FROM t", "SNOWFLAKE.CORTEX.SENTIMENT")
+        refusedAs("SELECT AI_CLA\u017F\u017FIFY(a, ['x', 'y'])", "AI_CLASSIFY")
+        refusedAs("SELECT ai_cla\u017F\u017Fify(a, ['x', 'y'])", "AI_CLASSIFY")
+        refusedAs("SELECT * FROM TABLE(CORTEX_\u017FEARCH_BATCH(service_name => 's'))", "CORTEX_SEARCH_BATCH")
+        refusedAs("SELECT m!FORECA\u017FT(FORECASTING_PERIODS => 3)", "!FORECAST")
         // the dotless i, U+0131, in place of I
-        refusedAs("SELECT Aı_COMPLETE('m', 'p')", "AI_COMPLETE")
-        refusedAs("SELECT aı_complete('m', 'p')", "AI_COMPLETE")
-        refusedAs("SELECT m!PREDıCT(INPUT_DATA => {*}) FROM t", "!PREDICT")
+        refusedAs("SELECT A\u0131_COMPLETE('m', 'p')", "AI_COMPLETE")
+        refusedAs("SELECT a\u0131_complete('m', 'p')", "AI_COMPLETE")
+        refusedAs("SELECT m!PRED\u0131CT(INPUT_DATA => {*}) FROM t", "!PREDICT")
         // ligatures upper-casing folds to two ASCII letters (U+FB02 to FL, U+FB01 to FI)
-        refusedAs("SELECT SNOWﬂAKE.CORTEX.COMPLETE('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
-        refusedAs("SELECT AI_ﬁLTER(a)", "AI_FILTER")
+        refusedAs("SELECT SNOW\uFB02AKE.CORTEX.COMPLETE('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
+        refusedAs("SELECT AI_\uFB01LTER(a)", "AI_FILTER")
         // the same letters in a column name that is not refused stay accepted
-        accepted("SELECT aı_score, ſnowflake_note FROM t")
+        accepted("SELECT a\u0131_score, \u017Fnowflake_note FROM t")
     }
 
     test("CORTEX_SEARCH_BATCH is refused as a call; a column named cortex_search_batch_id is accepted") {
@@ -346,16 +346,16 @@ class SnowflakeAiFunctionSpec extends AnyFunSuite {
             "AI_X //\t",
             "\"SNOWFLAKE\" . ",
             "SNOWFLAKE . CORTEX //\t.",
-            "SNOWFLAKE .​CORTEX　",
-            "SNOWﬂAKE.",
-            "ſNOWFLAKE . CORTEX //",
+            "SNOWFLAKE\u00A0.\u200BCORTEX\u3000",
+            "SNOW\uFB02AKE.",
+            "\u017FNOWFLAKE . CORTEX //",
             "CORTEX_SEARCH_BATCH ",
             "CORTEX_SEARCH_BATCH //\t",
             "! a //\t",
-            "!ſ ",
+            "!\u017F ",
             "!",
             "m != ",
-            "Aı_X //"
+            "A\u0131_X //"
         ).foreach(unit => bounded("repeated \"" + unit + "\"", repeated(unit)))
         // a long name after each kind of start, read once
         bounded("one long AI_ name", "SELECT AI_" + ("X" * Length) + " (")

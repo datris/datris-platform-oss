@@ -37,25 +37,25 @@ class SnowflakeAiFunctionRulingsSpec extends AnyFunSuite {
 
     test("a letter that folds to ASCII only by lower-casing or by the equalsIgnoreCase fold does not hide a name") {
         // the Kelvin sign, U+212A, lower-cases to k
-        refusedAs("SELECT SNOWFLAKE.CORTEX.COMPLETE('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
-        refusedAs("SELECT \"SNOWFLAKE\".\"CORTEX\".\"COMPLETE\"('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
-        refusedAs("SELECT m!KMEANS(a) FROM t", "!KMEANS")
+        refusedAs("SELECT SNOWFLA\u212AE.CORTEX.COMPLETE('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
+        refusedAs("SELECT \"SNOWFLA\u212AE\".\"CORTEX\".\"COMPLETE\"('m', 'p')", "SNOWFLAKE.CORTEX.COMPLETE")
+        refusedAs("SELECT m!\u212AMEANS(a) FROM t", "!KMEANS")
         // the dotted capital I, U+0130: Character.toLowerCase gives i
-        refusedAs("SELECT Aİ_COMPLETE('m', 'p')", "AI_COMPLETE")
-        refusedAs("SELECT snowflake.cortex.İTEM_FUNCTION(a) FROM t", "SNOWFLAKE.CORTEX.ITEM_FUNCTION")
+        refusedAs("SELECT A\u0130_COMPLETE('m', 'p')", "AI_COMPLETE")
+        refusedAs("SELECT snowflake.cortex.\u0130TEM_FUNCTION(a) FROM t", "SNOWFLAKE.CORTEX.ITEM_FUNCTION")
         // the sharp s upper-cases to SS
-        refusedAs("SELECT AI_CLAßIFY(a, ['x', 'y'])", "AI_CLASSIFY")
+        refusedAs("SELECT AI_CLA\u00DFIFY(a, ['x', 'y'])", "AI_CLASSIFY")
         // the reported name is in ASCII upper case whatever letters spelled it
-        refusedAs("SELECT ai_ﬁnd(a) FROM t", "AI_FIND")
-        refusedAs("SELECT m!ﬆep(a) FROM t", "!STEP")
-        refusedAs("SELECT snowflake.cortex.ſentiment(a) FROM t", "SNOWFLAKE.CORTEX.SENTIMENT")
+        refusedAs("SELECT ai_\uFB01nd(a) FROM t", "AI_FIND")
+        refusedAs("SELECT m!\uFB06ep(a) FROM t", "!STEP")
+        refusedAs("SELECT snowflake.cortex.\u017Fentiment(a) FROM t", "SNOWFLAKE.CORTEX.SENTIMENT")
         // the same letters in names that are not refused
-        accepted("SELECT Key, Aİ_SCORE, my_snowflaKe FROM t")
+        accepted("SELECT \u212Aey, A\u0130_SCORE, my_snowfla\u212Ae FROM t")
     }
 
     test("an exclamation mark in a string literal followed by a word and a parenthesis is refused; the way round is accepted") {
         refusedAs("SELECT a FROM t WHERE note = 'Done! Next (soon)'", "!NEXT")
-        refusedAs("SELECT a FROM t WHERE note = 'Done! Next　(soon)'", "!NEXT")
+        refusedAs("SELECT a FROM t WHERE note = 'Done!\u00A0Next\u3000(soon)'", "!NEXT")
         // the way round: split the literal so no name and `(` follow the `!`
         accepted("SELECT a FROM t WHERE note = 'Done!' || ' Next (soon)'")
         // a `!` followed by anything other than a name is not a method call
@@ -79,6 +79,42 @@ class SnowflakeAiFunctionRulingsSpec extends AnyFunSuite {
         refusedAs("SELECT a FROM \"snowflake\".\"cortex\".t", "SNOWFLAKE.CORTEX.T")
         refusedAs("SELECT a FROM t, x.\"SNOWFLAKE\".\"CORTEX\".\"T\"", "SNOWFLAKE.CORTEX.T")
         refusedAs("SELECT (SNOWFLAKE.CORTEX.COMPLETE('m', a)) FROM t", "SNOWFLAKE.CORTEX.COMPLETE")
+    }
+
+    test("the test is on the text: a CTE or alias beginning ai_ with a column list is refused; the ways round are accepted") {
+        // refused: an AI_ name followed by a parenthesis wherever it stands
+        refusedAs("WITH ai_x (a) AS (SELECT 1) SELECT a FROM ai_x", "AI_X")
+        refusedAs("WITH ai_x(a) AS (SELECT 1) SELECT a FROM ai_x", "AI_X")
+        refusedAs("SELECT * FROM (VALUES (1, 2)) AS ai_v (a, b)", "AI_V")
+        refusedAs("SELECT * FROM (SELECT 1) ai_sub (a)", "AI_SUB")
+        refusedAs("SELECT * FROM t AS ai_alias(a, b)", "AI_ALIAS")
+        refusedAs("SELECT a FROM t1, t2 WHERE t1.id = t2.ai_id (+)", "AI_ID")
+        refusedAs("DESC FUNCTION ai_score(VARCHAR)", "AI_SCORE")
+        refusedAs("SELECT \"AI_Confidence (%)\" FROM t", "AI_CONFIDENCE")
+        refusedAs("SELECT a FROM t WHERE note = 'ai_team (west)'", "AI_TEAM")
+        refusedAs("SELECT src:snowflake.cortex.enabled FROM cfg", "SNOWFLAKE.CORTEX.ENABLED")
+        // the ways round
+        accepted("WITH ai_x AS (SELECT 1 AS a) SELECT a FROM ai_x")
+        accepted("WITH x (a) AS (SELECT 1) SELECT a FROM x")
+        accepted("SELECT * FROM (VALUES (1, 2)) AS v (a, b)")
+        accepted("SELECT * FROM t AS alias_ai(a, b)")
+        accepted("SELECT a FROM t1, t2 WHERE t1.id = t2.ai_id")
+        accepted("SELECT a FROM t WHERE note = 'ai_team' || ' (west)'")
+        accepted("SELECT src['snowflake']['cortex']['enabled'] FROM cfg")
+        accepted("SELECT a FROM t1 LEFT JOIN t2 ON t1.id = t2.ai_id")
+        accepted("SHOW USER FUNCTIONS LIKE 'AI_X'")
+        accepted("SELECT query_text FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY WHERE query_text ILIKE '%snowflake.' || 'cortex.complete%'")
+        accepted("SELECT * FROM t")
+        refusedAs("SELECT a FROM t WHERE note = 'Sales! Total (USD)'", "!TOTAL")
+        refusedAs("SELECT \"Sales! Total (USD)\" FROM t", "!TOTAL")
+    }
+
+    test("EXECUTE_AI_EVALUATION is refused as a call; a column of that name is accepted") {
+        refusedAs("SELECT EXECUTE_AI_EVALUATION('START', OBJECT_CONSTRUCT('run_name', 'r'), '@st/c.yaml')", "EXECUTE_AI_EVALUATION")
+        refusedAs("SELECT execute_ai_evaluation //x\n ('STATUS')", "EXECUTE_AI_EVALUATION")
+        refusedAs("SELECT \"EXECUTE_AI_EVALUATION\"('STATUS')", "EXECUTE_AI_EVALUATION")
+        accepted("SELECT execute_ai_evaluation, execute_ai_evaluation_id FROM t")
+        accepted("SELECT my_execute_ai_evaluation(a) FROM t")
     }
 
     test("other SNOWFLAKE schemas are out of scope and stay accepted") {
@@ -132,11 +168,11 @@ class SnowflakeAiFunctionRulingsSpec extends AnyFunSuite {
     test("the new checks stay fast at the length limit, letters that fold to several included") {
         bounded("warm-up", "SELECT a FROM t WHERE b = 1")
         Seq(
-            "ﬃ",
-            "AI_ﬃ",
+            "\uFB03",
+            "AI_\uFB03",
             "\"AI_X\"\"",
             "\"",
-            "SNOWFLAKE . \"CORTEX\" //\t.",
+            "SNOWFLA\u212AE . \"CORTEX\" //\t.",
             "! \"a //\t",
             "!a //\t",
             "AI_X //\t",
