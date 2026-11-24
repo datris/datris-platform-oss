@@ -24,8 +24,8 @@ case class TapGenerateResult(
 object TapScriptGenerator {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
-    private val SYSTEM_PROMPT =
-        """You are a code generator. Return a JSON object with two fields:
+    private[util] val SYSTEM_PROMPT =
+        s"""You are a code generator. Return a JSON object with two fields:
           |- "script": a valid Python 3 script that defines a function called `fetch()`
           |  that takes no arguments and returns a list of dictionaries (records) — or, for a
           |  large source, YIELDS them one at a time (a generator, or any iterator).
@@ -100,14 +100,16 @@ object TapScriptGenerator {
           |  Body: {"sql": "SELECT * FROM public.table_name", "database": "{pg_db}", "limit": -1}
           |  Response: object with keys `results` (array of row dicts) and `count` (int)
           |- MongoDB: POST /api/v1/query/mongodb
-          |  Body: {"query": "...", "database": "{mongo_db}", "collection": "collection_name", "limit": -1}
+          |  Body: {"filter": {...}, "database": "{mongo_db}", "collection": "collection_name", "limit": -1}
+          |  Body fields: ${TapPlatformQueryGuidance.MongoBodyFields}.
           |  Response: object with keys `results` (array of document dicts) and `count` (int)
           |
           |Tap scripts MUST always pass `"limit": -1` on both endpoints (but honor the test-sample env var below):
           |- `-1` tells the server to return every matching row. It is the correct value for real cron/manual runs.
           |- Omitting `limit` makes the server apply a preview default (20 for Mongo, 100 for Postgres) and the tap will silently read a tiny slice. Do not rely on the default.
-          |- There is no pagination on these endpoints. A single call returns the full result set; design the rest of the script accordingly (if a source is very large, `yield` as you go rather than accumulating every intermediate value).
+          |- These endpoints have no pagination cursor. A single call returns the full result set when it finishes within the limits below; design the rest of the script accordingly (if a source is very large, `yield` as you go rather than accumulating every intermediate value).
           |- A single PostgreSQL query is limited to five minutes, also with `"limit": -1`. Page a large read across several queries (for example by key range) instead of reading it in one.
+          |- ${TapPlatformQueryGuidance.MongoReadRules}
           |
           |Test-sample environment variable `DATRIS_TAP_TEST_LIMIT`:
           |- When the user enables "Limit test sample" in the Create Tap test UI, the runner injects `DATRIS_TAP_TEST_LIMIT` (an integer string, e.g. "20") into the script process. Cron and manual runs never set this variable.

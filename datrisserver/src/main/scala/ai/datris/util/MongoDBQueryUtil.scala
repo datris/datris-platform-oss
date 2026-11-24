@@ -82,7 +82,7 @@ object MongoDBQueryUtil {
     @volatile private[datris] var maxResultBytes: Long = parseMaxResultMb(sys.env.get(MaxResultMbVariable)) * BytesPerMb
 
     /** What both refusals tell the caller to do instead. */
-    private val SplitAdvice = "split the read into ranges with a filter, each with a positive limit."
+    private val SplitAdvice = "split the read into ranges with a filter (a positive limit on each call is only a guard)."
 
     /** A query that did not finish within its time limit (the server's
       * `maxTime` or the client's socket read timeout). */
@@ -239,8 +239,11 @@ object MongoDBQueryUtil {
                 }
             }
         } catch {
-            case _: MongoExecutionTimeoutException | _: MongoSocketReadTimeoutException =>
+            case timeout @ (_: MongoExecutionTimeoutException | _: MongoSocketReadTimeoutException) =>
                 logger.warn("MongoDB query did not finish within " + seconds + " s")
+                // The driver exception is replaced below, so a close failure
+                // attached to it is logged here (class name only).
+                timeout.getSuppressed.foreach(f => logger.warn("MongoDB query: closing the cursor failed: " + f.getClass.getName))
                 throw new QueryTimeLimitException(seconds)
         }
         results

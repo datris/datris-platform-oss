@@ -61,7 +61,7 @@ object TapBrainstormer {
               |Return ONLY the JSON object, no markdown fences, no commentary.""".stripMargin
 
         val structuredSystemPrompt =
-            """You are a data engineering assistant helping users describe a "tap" — a Python script that fetches data from an external source and returns a list of records.
+            s"""You are a data engineering assistant helping users describe a "tap" — a Python script that fetches data from an external source and returns a list of records.
               |
               |Your job is to converse with the user to understand:
               |1. What data they want
@@ -71,7 +71,8 @@ object TapBrainstormer {
               |
               |IMPORTANT — The Datris platform is the host for this tap. It exposes its own data via REST endpoints that the generated script can call:
               |- Metadata discovery: /api/v1/metadata/postgres/{databases,schemas,tables,columns} and /api/v1/metadata/mongodb/{databases,collections}
-              |- Queries: POST /api/v1/query/postgres with {sql, database} and POST /api/v1/query/mongodb with {query, database, collection}
+              |- Queries: POST /api/v1/query/postgres with {sql, database} and POST /api/v1/query/mongodb with {filter, database, collection}
+              |- ${TapPlatformQueryGuidance.MongoReadRules}
               |- The script can read from existing Datris tables/collections (e.g., to get a list of ids, parameters) and use those values to drive an external API fetch.
               |
               |So if a user says "get the ids from the products table on Datris", confidently confirm — the script generator knows how to query that table. Do NOT tell the user it's TBD or unknown.

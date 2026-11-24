@@ -34,7 +34,7 @@ import scala.collection.JavaConverters._
   * {{{
   * object MongoDBQueryUtil {
   *     private[util] def timeoutSeconds(limit: Int): Int     // 30 for limit >= 0, 300 for limit < 0
-  *     @volatile private[datris] var maxResultBytes: Long    // DATRIS_QUERY_MAX_RESULT_MB, default 256 MB, 0 = none
+  *     @volatile private[datris] var maxResultBytes: Long    // DATRIS_QUERY_MAX_RESULT_MB, default 32 MB, 0 = none
   *     class ResultTooLargeException ... extends DatrisException
   * }
   * }}}

@@ -126,6 +126,36 @@ class MongoDBQuerySettingsSpec extends AnyFunSuite with BeforeAndAfterEach {
         client
     }
 
+    test("a range filter written in extended JSON reaches the find as an ObjectId and a date") {
+        val find = mock(classOf[FindIterable[Document]], RETURNS_SELF)
+        when(find.iterator()).thenReturn(new FailingCloseCursor(Nil, None))
+        val coll = mock(classOf[MongoCollection[Document]])
+        when(coll.find(any(classOf[Bson]))).thenReturn(find)
+        val db = mock(classOf[MongoDatabase])
+        when(db.getCollection(anyString())).thenReturn(coll)
+        val client = mock(classOf[MongoClient])
+        when(client.getDatabase(anyString())).thenReturn(db)
+        MongoDBQueryUtil.clientFactoryOverride = () => client
+
+        def obj(k: String, v: Any): java.util.Map[String, Any] = {
+            val m = new java.util.LinkedHashMap[String, Any]()
+            m.put(k, v)
+            m
+        }
+        val filter = new java.util.LinkedHashMap[String, Any]()
+        filter.put("_id", obj("$gt", obj("$oid", "0123456789abcdef01234567")))
+        filter.put("at", obj("$lt", obj("$date", "2026-01-01T00:00:00Z")))
+        MongoDBQueryUtil.query("items", filter, null, -1, null)
+
+        val captor = org.mockito.ArgumentCaptor.forClass(classOf[Bson])
+        org.mockito.Mockito.verify(coll).find(captor.capture())
+        val parsed = captor.getValue.asInstanceOf[Document]
+        val id = parsed.get("_id", classOf[Document]).get("$gt")
+        assert(id == new org.bson.types.ObjectId("0123456789abcdef01234567"), "parsed as " + id)
+        val at = parsed.get("at", classOf[Document]).get("$lt")
+        assert(at == java.util.Date.from(java.time.Instant.parse("2026-01-01T00:00:00Z")), "parsed as " + at)
+    }
+
     private def docs(n: Int, padChars: Int): Seq[Document] =
         (1 to n).map(i => new Document("_id", Integer.valueOf(i)).append("pad", "x" * padChars))
 

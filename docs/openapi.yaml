@@ -4002,7 +4002,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
         '400':
-          description: '`limit` is not an integer, the database or collection is not a data collection (body `{"error": "This database or collection is not available for queries."}`), the query did not finish within its time limit (`The query did not finish within its time limit of 30 seconds; split the read into ranges with a filter, each with a positive limit.`, 300 seconds with `limit: -1`), or the result is larger than the size ceiling (`The result is larger than 32 MB; split the read into ranges with a filter, each with a positive limit.`). Body: `{"error": ...}`'
+          description: '`limit` is not an integer, the database or collection is not a data collection (body `{"error": "This database or collection is not available for queries."}`), the query did not finish within its time limit (`The query did not finish within its time limit of 30 seconds; split the read into ranges with a filter (a positive limit on each call is only a guard).`, 300 seconds with `limit: -1`), or the result is larger than the size ceiling (`The result is larger than 32 MB; split the read into ranges with a filter (a positive limit on each call is only a guard).`). Body: `{"error": ...}`'
         '500':
           description: 'A filter or projection holding $where, $function or $accumulator (message `MongoDB filter contains blocked operator: $where`, or `projection`), an empty collection name, or any other error. Body: `{"error": ...}`'
 

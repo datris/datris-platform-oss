@@ -53,6 +53,8 @@ def test_the_reference_states_the_mongodb_limits_and_the_status_check():
     assert re.search(r"split [^.]*ranges with `filter`", sentence), sentence
     assert "400" in sentence, sentence
     assert re.search(r"must check the status", sentence), sentence
+    assert re.search(r"range read may keep `\"limit\": -1`", sentence), sentence
+    assert "$oid" in sentence and "$date" in sentence, sentence
 
 
 def test_the_create_tap_description_tells_the_script_to_check_the_status():
