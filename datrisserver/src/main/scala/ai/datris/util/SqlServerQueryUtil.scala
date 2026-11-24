@@ -110,6 +110,10 @@ object SqlServerQueryUtil {
 
     private val OneStatementOnly = "Only one statement is allowed in a query"
 
+    private val BraceRule =
+        "Curly braces are not allowed in queries outside string literals; " +
+            "write dates as '2024-01-31' and use T-SQL function names instead of {d ...} and {fn ...}"
+
     // Words that may stand right before a second SELECT of the same statement.
     private val SetOperators = Set("UNION", "EXCEPT", "INTERSECT")
 
@@ -267,6 +271,8 @@ object SqlServerQueryUtil {
       *  - an unterminated literal or quoted identifier is refused;
       *  - a `)` with no matching `(`, or a `(` never closed, is refused (a stray
       *    `)` would close the `SELECT TOP (n) * FROM (...)` wrapper);
+      *  - an opening brace `{` is refused (brace escapes such as `{d '...'}`
+      *    and `{fn ...}`); a lone `}` is left to the server;
       *  - a [[STATEMENT_KEYWORDS]] word, or the phrase `NEXT VALUE FOR`, is
       *    refused as `Query contains blocked keyword: <WORD>`;
       *  - within one parenthesis level, a `SELECT` after the first must
@@ -345,7 +351,8 @@ object SqlServerQueryUtil {
       * digit or `_`) with their start offset and parenthesis depth, `(` and
       * `)`, one token per `'...'` literal or `[...]` / `"..."` identifier, and
       * one per other character that is not whitespace. Left when a literal or
-      * identifier is unterminated or the parentheses do not balance. Depth is
+      * identifier is unterminated, the parentheses do not balance, or an
+      * opening brace stands outside a literal or identifier. Depth is
       * reported as it is, never clamped. */
     private def scan(sql: String): Either[String, Vector[Token]] = {
         val out = Vector.newBuilder[Token]
@@ -401,6 +408,15 @@ object SqlServerQueryUtil {
                 val start = i
                 while (i < n && isWordChar(sql.charAt(i))) i += 1
                 out += Word(sql.substring(start, i), start, depth)
+            } else if (c == '{') {
+                // Brace escapes ({fn ...}, {d '...'} and the rest) are refused
+                // outright (checked 2026-11-24 against mssql-jdbc 12.8.2, the
+                // driver docs and source): the driver passes them to the
+                // server unchanged unless the whole text is a call escape, and
+                // escape processing cannot be turned off (setEscapeProcessing
+                // has no effect). Whether the engine runs a call escape in the
+                // middle of a batch was not checked against a server.
+                return Left(BraceRule)
             } else {
                 if (!isSeparator(c)) out += Other
                 i += 1
