@@ -1520,4 +1520,22 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(added.size == 1, "one row for the query login: " + added)
         assert(added.head._2 == "ok", added.head.toString)
     }
+
+    test("postgres query login: a query login that could not be checked warns, and the counts-only detail drops the reason") {
+        val reason = "could not connect as the query login: Connection to pg-host-5d8e:5432 refused"
+        val added = queryLoginRows(Some(Left(reason)))
+        assert(added.size == 1, "one row for the query login: " + added)
+        val (id, status, severity, detail, remediation) = added.head
+        assert(status == "warn" && severity == "warn", added.head.toString)
+        assert(detail.contains(reason), detail)
+        assert(remediation.contains("queryUsername") && remediation.contains("queryPassword"), remediation)
+        val row = DoctorService.run("full", Set.empty, Map.empty, withQueryLogin(Some(Left(reason))), slots, "1.62.0").checks.find(_.id == id).get
+        assert(row.namelessDetail != null && !row.namelessDetail.contains(reason) && !row.namelessDetail.contains("pg-host"), row.namelessDetail)
+    }
+
+    test("postgres query login: not part of the boot lines or the quick report") {
+        val probes = withQueryLogin(Some(Right(("reader-user-2b6d", true))))
+        assert(!DoctorService.runStartup(probes, slots, "1.62.0").exists(_.id == "postgres.query_login"))
+        assert(!DoctorService.run("quick", Set.empty, Map.empty, probes, slots, "1.62.0").checks.exists(_.id == "postgres.query_login"))
+    }
 }

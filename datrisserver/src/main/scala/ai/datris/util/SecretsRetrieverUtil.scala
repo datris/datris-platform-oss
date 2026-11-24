@@ -43,18 +43,38 @@ object SecretsRetrieverUtil {
     def hasQueryLogin(secrets: PostgresSecrets): Boolean =
         present(secrets.queryUsername) || present(secrets.queryPassword)
 
+    /** True when read-back queries connect with a login other than the
+      * loading login: both query keys set, naming a different user. Never
+      * throws; a half-configured secret answers false (its queries are
+      * refused by [[postgresQueryLogin]] before they connect). */
+    def usesQueryLogin(secrets: PostgresSecrets): Boolean =
+        present(secrets.queryUsername) && present(secrets.queryPassword) && secrets.queryUsername != secrets.username
+
     /** The (user, password) a read-back query connects with: the secret's
       * `queryUsername`/`queryPassword` when both are set, exactly as written;
       * the loading `username`/`password` when neither is. A key that is
       * missing, empty or only whitespace counts as absent. One without the
       * other is refused with a DatrisException naming the missing key (never
-      * a fall back to the loading login); the message carries no value of the
-      * secret. Pure. */
+      * a fall back to the loading login). A `queryUsername` equal to the
+      * loading `username` is the loading login when `queryPassword` equals
+      * `password`, and is refused when it does not. No refusal message carries
+      * a value of the secret. Pure. */
     def postgresQueryLogin(secrets: PostgresSecrets): (String, String) = {
         val hasUser = present(secrets.queryUsername)
         val hasPass = present(secrets.queryPassword)
-        if (hasUser && hasPass) (secrets.queryUsername, secrets.queryPassword)
-        else if (!hasUser && !hasPass) (secrets.username, secrets.password)
+        if (hasUser && hasPass) {
+            if (secrets.queryUsername != secrets.username) (secrets.queryUsername, secrets.queryPassword)
+            // The loading user again: with its own password this is just the
+            // loading login; with another password it would share the loading
+            // login's pool under two passwords, so it is refused.
+            else if (secrets.queryPassword == secrets.password) (secrets.username, secrets.password)
+            else
+                throw new DatrisException(
+                    "The Postgres secret's query login (queryUsername) is the same PostgreSQL user as the loading login (username), " +
+                        "with a different password. The query login must be a different PostgreSQL user from the loading login: " +
+                        "set queryUsername to a separate read-only user, or remove queryUsername and queryPassword to query with the loading login."
+                )
+        } else if (!hasUser && !hasPass) (secrets.username, secrets.password)
         else if (hasUser)
             throw new DatrisException(
                 "The Postgres secret names a query user (queryUsername) but no query password (queryPassword). " +

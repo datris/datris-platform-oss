@@ -191,7 +191,7 @@ object PostgresQueryUtil {
         // carries one, else the loading login. Half-configured is refused here,
         // before any connection is opened.
         val (user, pass) = SecretsRetrieverUtil.postgresQueryLogin(secrets)
-        if (SecretsRetrieverUtil.hasQueryLogin(secrets)) noteQueryLogin(user)
+        if (SecretsRetrieverUtil.usesQueryLogin(secrets)) noteQueryLogin(user) else noteLoadingLogin()
         Class.forName("org.postgresql.Driver")
 
         // The secret's URL, with the database percent-encoded into its path
@@ -206,17 +206,34 @@ object PostgresQueryUtil {
         }
     }
 
-    /** The query user last logged by [[noteQueryLogin]]. */
-    @volatile private var loggedQueryUser: String = null
+    /** The query user queries last connected as, or null while they use the
+      * loading login (from the start, on an install without query keys). */
+    private val loggedQueryUser = new java.util.concurrent.atomic.AtomicReference[String](null)
 
     /** One info line the first time queries connect with the secret's query
-      * login, and again if that user changes. Names the user only. Not
-      * called when the secret carries no query login. */
+      * login, and again if that user changes. Names the user only. */
     private def noteQueryLogin(user: String): Unit =
-        if (user != loggedQueryUser) {
-            loggedQueryUser = user
+        if (user != loggedQueryUser.get && user != loggedQueryUser.getAndSet(user))
             logger.info("Read-back queries connect as the Postgres query login '" + user + "' from the Postgres secret")
-        }
+
+    /** One info line when queries return to the loading login after using a
+      * query login in this process. Nothing on an install that never had one. */
+    private def noteLoadingLogin(): Unit =
+        if (loggedQueryUser.get != null && loggedQueryUser.getAndSet(null) != null)
+            logger.info("Read-back queries connect with the loading login again: the Postgres secret no longer names a query login")
+
+    /** Test seam: when set, [[queryLoginInUse]] reads this secret instead of
+      * Vault. */
+    @volatile private[util] var secretsOverride: ai.datris.model.PostgresSecrets = null
+
+    /** True when the Postgres secret names a query login that read-back
+      * queries connect with ([[SecretsRetrieverUtil.usesQueryLogin]]). False
+      * when it names none or cannot be read. */
+    private[util] def queryLoginInUse(): Boolean =
+        try {
+            val s = secretsOverride
+            SecretsRetrieverUtil.usesQueryLogin(if (s != null) s else SecretsRetrieverUtil.postgresSecrets())
+        } catch { case _: Exception => false }
 
     /** Runs `finalSql` on `conn` inside [[inReadOnlyTransaction]] and reads
       * every row. The caller's own SQL (no params) stays a plain statement,

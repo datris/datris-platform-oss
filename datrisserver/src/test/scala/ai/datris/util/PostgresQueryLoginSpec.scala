@@ -137,4 +137,44 @@ class PostgresQueryLoginSpec extends AnyFunSuite {
         assert("(?is).*query\\s*user.*".r.pattern.matcher(noUser).matches(), noUser)
         assertNoSecretValue(noUser)
     }
+
+    // ------------------------------------------------------------------
+    // Review follow-ups: whitespace-only keys, the same user as the loading
+    // login, and usesQueryLogin.
+    // ------------------------------------------------------------------
+
+    test("whitespace-only query keys count as absent; a key with real characters is used exactly as written") {
+        assert(queryLogin(secrets("   ", "\t")) == ((LoadUser, LoadPassword)))
+        assert(queryLogin(secrets(" \n ", null)) == ((LoadUser, LoadPassword)))
+        assert(queryLogin(secrets(null, "  ")) == ((LoadUser, LoadPassword)))
+        val noPassword = refused(secrets(QueryUser, "   ")).getMessage
+        assert("(?is).*query\\s*password.*".r.pattern.matcher(noPassword).matches(), noPassword)
+        assertNoSecretValue(noPassword)
+        val noUser = refused(secrets(" \t", QueryPassword)).getMessage
+        assert("(?is).*query\\s*user.*".r.pattern.matcher(noUser).matches(), noUser)
+        assertNoSecretValue(noUser)
+        // Not trimmed: the padded values are the login.
+        assert(queryLogin(secrets(" " + QueryUser, QueryPassword + " ")) == ((" " + QueryUser, QueryPassword + " ")))
+    }
+
+    test("the loading user as the query user with a different password is refused, naming no secret value") {
+        val message = refused(secrets(LoadUser, QueryPassword)).getMessage
+        assert(message.toLowerCase(java.util.Locale.ROOT).contains("postgres"), message)
+        assert(message.contains("different PostgreSQL user"), message)
+        assertNoSecretValue(message)
+    }
+
+    test("the loading user as the query user with the loading password is the loading login") {
+        val (user, password) = queryLogin(secrets(LoadUser, LoadPassword))
+        assert((user eq LoadUser) && (password eq LoadPassword))
+        assert(!SecretsRetrieverUtil.usesQueryLogin(secrets(LoadUser, LoadPassword)))
+    }
+
+    test("usesQueryLogin: true only for a complete query login naming another user") {
+        assert(SecretsRetrieverUtil.usesQueryLogin(secrets(QueryUser, QueryPassword)))
+        assert(!SecretsRetrieverUtil.usesQueryLogin(PostgresSecrets(LoadUser, LoadPassword, JdbcUrl)))
+        assert(!SecretsRetrieverUtil.usesQueryLogin(secrets(QueryUser, null)))
+        assert(!SecretsRetrieverUtil.usesQueryLogin(secrets(null, QueryPassword)))
+        assert(!SecretsRetrieverUtil.usesQueryLogin(secrets("  ", "  ")))
+    }
 }

@@ -67,7 +67,7 @@ The endpoint enforces multiple layers of protection:
 
 A query refused by one of these checks (query text over the length limit, an empty query, a query that does not start with `SELECT` or `WITH`, a blocked word or function, a semicolon, a comment, `U&` quoting) returns `500 Internal Server Error` with `{"error": "..."}`, the message naming the rule (for example `Only SELECT queries are allowed (WITH/CTE is also permitted)` or `Query contains blocked keyword: DROP`).
 
-Queries run with the platform's own PostgreSQL credentials (the PostgreSQL secret), which pipelines also use to load data, unless that secret also names a separate query login (`queryUsername` and `queryPassword`): queries then connect as that login and loads keep theirs. See [Separate query login](/destinations/postgres#separate-query-login).
+Queries run with the platform's own PostgreSQL credentials (the PostgreSQL secret), which pipelines also use to load data, unless that secret also names a separate query login (`queryUsername` and `queryPassword`): queries then connect as that login and loads keep theirs. With a query login set, a secret that has only one of the two keys, or names the loading user as the query user with a different password, refuses every query with `500 Internal Server Error` and `{"error": "..."}` naming the problem, and a table the query user may not read answers `500` with PostgreSQL's `permission denied` message. See [Separate query login](/destinations/postgres#separate-query-login).
 
 ---
 
