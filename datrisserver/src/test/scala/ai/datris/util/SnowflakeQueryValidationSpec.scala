@@ -375,4 +375,37 @@ class SnowflakeQueryValidationSpec extends AnyFunSuite {
         validate("SELECT " + column + " FROM t")
         validate("SELECT a FROM t ORDER BY " + column)
     }
+
+    // ---- where a line comment ends (review round 1) ----
+    //
+    // Where a `//` comment ends is not known here: a tab, carriage return or
+    // other control or separator character may be ordinary comment text. A
+    // gap is seen when any reading of where each comment ends makes one.
+
+    private val CommentInnerEnds = Seq("\t", "\r", "\u000B", "\u000C", "\u0001", "\u0000", "\u0085", "\u2028", "\u2029")
+
+    test("the flow operator is refused when a line comment between its characters holds a control or separator character") {
+        ("//x\ty\n" +: "//x\ry\n" +: CommentInnerEnds.map(c => "//x" + c + "y\n")).foreach { gap =>
+            splitOperators(gap).foreach { op =>
+                refusedChained("SELECT a FROM t " + op + " SELECT b FROM u")
+                refusedChained("SHOW TABLES" + op + "SELECT 1")
+            }
+        }
+        // a comment holding `//`, `-` or `>` itself, read every way
+        refusedChained("SELECT 1 -//a//b\tc\n>> SELECT 2")
+        refusedChained("SELECT 1 -//a\t>//b\n> SELECT 2")
+        refusedChained("SELECT 1 -//a\t>> SELECT 2")
+        // the same texts with the comment ended only by the line feed stay accepted when no reading makes the operator
+        validate("SELECT a - //x\ty\n b FROM t WHERE note = '>>'")
+        validate("SELECT a - 1 //x\ty\n FROM t WHERE b > 2")
+        validate("SELECT a FROM t -//x\ty>")
+    }
+
+    test("an IDENTIFIER call is refused when a line comment before its parenthesis holds a control or separator character") {
+        CommentInnerEnds.foreach { c =>
+            refusedNaming("SELECT IDENTIFIER//x" + c + "y\n('f')(1)", "IDENTIFIER")
+            refusedNaming("SELECT * FROM IDENTIFIER //x" + c + "y\n ('db.s.t')", "IDENTIFIER")
+        }
+        validate("SELECT identifier_col //x\ty\n FROM t")
+    }
 }

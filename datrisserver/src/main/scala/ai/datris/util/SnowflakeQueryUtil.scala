@@ -34,12 +34,10 @@ object SnowflakeQueryUtil {
 
     // Write/DDL verbs (shared with Postgres) plus Snowflake-specific data
     // movement and session verbs. USE is blocked so a query can't re-point the
-    // session at another database/role than the pipeline's config. The last
-    // entry, the word that restores a dropped object (`\bDROP\b` does not
-    // match inside it), is a second line: it can only start a statement, and
-    // a second statement is refused by the semicolon and chained-statement
-    // checks. It is built from two parts so this source does not spell out a
-    // statement word the released checks let through.
+    // session at another database/role than the pipeline's config. UNDROP
+    // (restores a dropped object; `\bDROP\b` does not match inside it) is a
+    // second line: it can only start a statement, and a second statement is
+    // refused by the semicolon and chained-statement checks.
     private val BLOCKED_KEYWORDS = Set(
         "INSERT",
         "UPDATE",
@@ -58,7 +56,7 @@ object SnowflakeQueryUtil {
         "COPY",
         "MERGE",
         "USE",
-        "UN" + "DROP"
+        "UNDROP"
     )
 
     /** Functions a read can call that act outside the query: cancel or abort
@@ -112,17 +110,17 @@ object SnowflakeQueryUtil {
     )
 
     /** For every position `i` of `text` (and `text.length`), where the gap
-      * starting at `i` ends: the gap a called name and its `(` may have
-      * between them, so a name is called when the character at the end of the
-      * gap after it is `(`. The gap is whitespace and `//` line comments, in
-      * any mix. Whitespace is taken widely (ASCII, Unicode separators, control
-      * and format characters) and a comment ends at the first control
-      * character or line or paragraph separator: where this differs from the
-      * store, it errs toward seeing a call. A `(` inside a comment is not the
-      * call's. Read by code point, so a character outside the Basic
-      * Multilingual Plane counts as what it is. One backward pass, so the
-      * whole table takes time in proportion to the text's length however many
-      * names it holds and however many lines a gap runs over. */
+      * starting at `i` ends when each `//` comment is read as ending at its
+      * first candidate end (a control character or a line or paragraph
+      * separator). The gap is whitespace and `//` line comments, in any mix.
+      * Whitespace is taken widely (ASCII, Unicode separators, control and
+      * format characters). Read by code point, so a character outside the
+      * Basic Multilingual Plane counts as what it is. One backward pass.
+      *
+      * This is one reading only. Where a comment really ends is not known
+      * here (a tab or other control character may be ordinary comment text
+      * to the store), so validation uses [[gapReaches]], which takes every
+      * reading, this one included. */
     private[util] def gapEnds(text: String): Array[Int] = {
         val n = text.length
         val ends = new Array[Int](n + 1)
@@ -154,19 +152,64 @@ object SnowflakeQueryUtil {
         case _ => false
     }
 
-    /** What ends a `//` comment: a control character, a line or paragraph separator. */
+    /** Where a `//` comment may end: a control character, a line or paragraph separator. */
     private def endsComment(cp: Int): Boolean = Character.getType(cp) match {
         case Character.CONTROL | Character.LINE_SEPARATOR | Character.PARAGRAPH_SEPARATOR => true
         case _ => false
     }
 
+    /** For every position `i` of `text` (and `text.length`), whether a gap
+      * starting at `i` can end at a position `t` where `isTarget(t)` holds,
+      * under ANY reading of where each `//` comment in the gap ends. The gap
+      * is the one [[gapEnds]] describes. A comment may end at any candidate
+      * end (a control character or a line or paragraph separator, where the
+      * gap goes on, since those are gap characters) or run past it; it always
+      * ends at a line feed, and a comment that reaches the end of the text
+      * ends the gap there with no target. Anything inside a comment (`//`,
+      * `(`, `-`, `>`) is text under the readings that run past it, and a
+      * token under the readings that end the comment before it; both are
+      * taken. Every reading [[gapEnds]] takes is one of these, so this sees a
+      * target wherever [[gapEnds]] does, and more: it errs toward refusing.
+      *
+      * One backward pass by code point with two booleans per position:
+      * `gap(i)` (a gap starting at i reaches a target) and `comment(i)` (a
+      * comment running through i, from i on, reaches one). `isTarget` must
+      * only read positions after `i` from tables already built, so the whole
+      * table takes time in proportion to the text's length however many
+      * starts, comments or lines it holds. */
+    private[util] def gapReaches(text: String, isTarget: Int => Boolean): Array[Boolean] = {
+        val n = text.length
+        val gap = new Array[Boolean](n + 1)
+        val comment = new Array[Boolean](n + 1)
+        var i = n - 1
+        while (i >= 0) {
+            val cp = text.codePointAt(i)
+            val next = math.min(n, i + Character.charCount(cp))
+            // A candidate end is itself a gap character, so ending the
+            // comment there continues the gap at `next`.
+            comment(i) =
+                if (cp == '\n') gap(next)
+                else if (endsComment(cp)) gap(next) || comment(next)
+                else comment(next)
+            gap(i) =
+                if (isTarget(i)) true
+                else if (isGapCharacter(cp)) gap(next)
+                else if (cp == '/' && i + 1 < n && text.charAt(i + 1) == '/') comment(i + 2)
+                else false
+            i -= 1
+        }
+        gap
+    }
+
     /** Whether `sql` holds Snowflake's flow operator (`-`, `>`, `>`), which
-      * runs a further statement after the first: a `-`, then a `>` at the end
-      * of the [[gapEnds]] gap after it, then another `>` at the end of the
-      * gap after that. Anywhere in the text, string literals and quoted
-      * identifiers included, so no scanner of Snowflake's quoting is needed.
-      * One [[gapEnds]] table, built only when the text holds both a `-` and a
-      * `>`, then constant work per `-`: linear in the text's length.
+      * runs a further statement after the first: a `-`, then a gap, a `>`,
+      * a gap and a `>`, where each gap is read as [[gapReaches]] reads it
+      * (any reading of where its comments end). Anywhere in the text, string
+      * literals and quoted identifiers included, so no scanner of
+      * Snowflake's quoting is needed. Two [[gapReaches]] tables, built only
+      * when the text holds both a `-` and a `>` (first for the last `>`, then
+      * for the middle one), then constant work per `-`: linear in the text's
+      * length.
       *
       * Vendor check, 2026-11-24 (docs.snowflake.com "Flow operators" and the
       * "SQL operators" overview, read, not run against an account): the
@@ -181,16 +224,13 @@ object SnowflakeQueryUtil {
     private[util] def chainedStatement(sql: String): Boolean = {
         if (sql.indexOf('-') < 0 || sql.indexOf('>') < 0) return false
         val n = sql.length
-        val ends = gapEnds(sql)
+        // toLast(i): a gap from i reaches the operator's last `>`.
+        val toLast = gapReaches(sql, t => sql.charAt(t) == '>')
+        // toMiddle(i): a gap from i reaches a `>` that a gap then joins to a last `>`.
+        val toMiddle = gapReaches(sql, t => sql.charAt(t) == '>' && toLast(t + 1))
         var i = 0
         while (i < n) {
-            if (sql.charAt(i) == '-') {
-                val j = ends(i + 1)
-                if (j < n && sql.charAt(j) == '>') {
-                    val k = ends(j + 1)
-                    if (k < n && sql.charAt(k) == '>') return true
-                }
-            }
+            if (sql.charAt(i) == '-' && toMiddle(i + 1)) return true
             i += 1
         }
         false
@@ -201,7 +241,8 @@ object SnowflakeQueryUtil {
 
     /** Each [[BLOCKED_FUNCTIONS]] entry with its pattern. For a
       * [[CallOnlyFunctions]] entry the pattern finds the name (optionally in
-      * double quotes) and [[gapEnds]] decides whether it is called. */
+      * double quotes) and [[gapReaches]] decides whether it is called: a
+      * gap after it reaches `(` under any reading of where its comments end. */
     private lazy val BlockedFunctionPatterns: Seq[(Boolean, scala.util.matching.Regex)] = BLOCKED_FUNCTIONS.map { fn =>
         // The SYSTEM$ entry takes Unicode letters and digits into the name,
         // so an allowlisted name with more after it is not the allowlisted
@@ -215,15 +256,15 @@ object SnowflakeQueryUtil {
     }
 
     /** The [[BLOCKED_FUNCTIONS]] names `text` uses, in order, in upper case.
-      * [[gapEnds]] is built at most once, and only when a call-only name is
-      * found. */
+      * The [[gapReaches]] table is built at most once, and only when a
+      * call-only name is found. */
     private def functionsUsed(text: String): Iterator[String] = {
-        lazy val ends = gapEnds(text)
+        lazy val called = gapReaches(text, t => text.charAt(t) == '(')
         BlockedFunctionPatterns.iterator.flatMap {
             case (callOnly, pattern) =>
                 pattern
                     .findAllMatchIn(text)
-                    .filter(m => !callOnly || { val e = ends(m.end); e < text.length && text.charAt(e) == '(' })
+                    .filter(m => !callOnly || called(m.end))
                     .map(m => QueryTextCase.upper(m.group(1)))
         }
     }
@@ -232,7 +273,7 @@ object SnowflakeQueryUtil {
       * text is searched as written and upper-cased with Unicode rules, so a
       * letter that only those rules fold to an ASCII one (a long s, a dotless
       * i) does not hide a name; `(?i)` alone folds ASCII only. The two texts'
-      * lengths can differ, so each has its own [[gapEnds]]. */
+      * lengths can differ, so each has its own [[gapReaches]] table. */
     private[util] def blockedFunction(sql: String): Option[String] =
         Iterator(sql, QueryTextCase.upper(sql))
             .flatMap(functionsUsed)
