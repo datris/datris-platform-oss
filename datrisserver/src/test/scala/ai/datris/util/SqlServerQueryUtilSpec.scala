@@ -512,7 +512,7 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
             intercept[DatrisException](SqlServerQueryUtil.validateQuery(sql))
         }
         val m = refusal("SELECT 1KILL 55")
-        assert(m == "Query contains blocked keyword: KILL", m)
+        assert(m == "Query has a number joined to a word; put a space between them", m)
         Seq("SELECT 1SET NOCOUNT ON", "SELECT 1WHILE 1=1SELECT 1", "SELECT 1 x FROM t WHERE 1=1SELECT 2", "SELECT a FROM t WHERE 1=1COMMIT").foreach { sql =>
             assert(problem(sql).isDefined, sql)
         }
@@ -558,5 +558,133 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
         val f = new Recorder(failOn = Set("execute"))
         intercept[java.sql.SQLException](run(f.conn, "SELECT v FROM t", unlimited = false, limit = 10))
         assert(!f.calls.contains("setAutoCommit:true"), f.calls)
+    }
+
+    // =====================================================================
+    // Story: SQL Server query: a column name that ends in a blocked keyword
+    // reads again (plans/stories/sqlserver-keyword-boundary-restored.md).
+    // Decision 1 as ruled: a BLOCKED_KEYWORDS hit counts unless the character
+    // before it is a letter, a decimal digit or `_`. A keyword joined to the
+    // end of a number is left to the scan, whose message is NumberJoined.
+    // =====================================================================
+
+    private val NumberJoined = "Query has a number joined to a word; put a space between them"
+
+    // The 32 BLOCKED_KEYWORDS words (private in SqlServerQueryUtil).
+    private val BlockedKeywords = Seq(
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "TRUNCATE",
+        "GRANT",
+        "REVOKE",
+        "DENY",
+        "EXEC",
+        "EXECUTE",
+        "MERGE",
+        "INTO",
+        "USE",
+        "BULK",
+        "OPENROWSET",
+        "OPENDATASOURCE",
+        "OPENQUERY",
+        "DBCC",
+        "BACKUP",
+        "RESTORE",
+        "SHUTDOWN",
+        "KILL",
+        "RECONFIGURE",
+        "WAITFOR",
+        "DECLARE",
+        "TRIGGER",
+        "SETUSER",
+        "REVERT",
+        "WRITETEXT",
+        "UPDATETEXT"
+    )
+
+    private def mixedCase(w: String): String =
+        w.zipWithIndex.map { case (c, i) => if (i % 2 == 0) c.toUpper else c.toLower }.mkString
+
+    private def keywordRefusal(sql: String, keyword: String): Unit = {
+        val msg = refusal(sql)
+        assert(msg == "Query contains blocked keyword: " + keyword, sql + " -> " + msg)
+    }
+
+    test("a name that ends in a blocked keyword after a digit or a non-ASCII letter is accepted") {
+        val names = Seq("co2use", "h2into", "q4update", "step1exec", "caf\u00E9use", "Co2Use", "\u00FCbersicht\u00E4kill")
+        Seq(
+            "SELECT co2use FROM t",
+            "SELECT h2into, q4update FROM t",
+            "SELECT step1exec FROM t",
+            "SELECT caf\u00E9use FROM t",
+            "SELECT Co2Use, \u00FCbersicht\u00E4kill FROM t"
+        ).foreach(accepted)
+        names.foreach { n =>
+            accepted("SELECT [" + n + "] FROM t")
+            accepted("SELECT a FROM t WHERE b = '" + n + "'")
+        }
+    }
+
+    test("a blocked keyword that stands on its own is refused with the keyword named") {
+        BlockedKeywords.foreach { kw =>
+            Seq(kw, kw.toLowerCase(java.util.Locale.ROOT), mixedCase(kw)).foreach { w =>
+                Seq(
+                    "SELECT a FROM t " + w,
+                    "SELECT a FROM t WHERE b IN (" + w + ")",
+                    "SELECT a FROM t WHERE b =" + w,
+                    "SELECT a," + w + " FROM t",
+                    "SELECT t." + w + " FROM t"
+                ).foreach(keywordRefusal(_, kw))
+            }
+        }
+    }
+
+    test("a blocked keyword after @, # or $ is refused, as on the released version") {
+        Seq("@", "#", "$").foreach { mark =>
+            Seq("USE", "KILL", "EXEC", "INTO", "DELETE").foreach { kw =>
+                Seq(kw, kw.toLowerCase(java.util.Locale.ROOT)).foreach { w =>
+                    keywordRefusal("SELECT a FROM t WHERE b = " + mark + w, kw)
+                }
+            }
+        }
+    }
+
+    test("a blocked keyword after a superscript digit or a combining mark is refused") {
+        // superscript two, superscript three, combining acute, combining diaeresis
+        Seq("x\u00B2", "x\u00B3", "cafe\u0301", "u\u0308").foreach { front =>
+            Seq("USE", "KILL", "INTO").foreach { kw =>
+                keywordRefusal("SELECT " + front + kw.toLowerCase(java.util.Locale.ROOT) + " FROM t", kw)
+            }
+        }
+    }
+
+    test("a blocked keyword joined to the end of a number is refused whatever form the number has") {
+        // the keyword directly follows a digit or a hex digit: the scan's message
+        Seq(
+            "SELECT 1KILL 55",
+            "SELECT 1SHUTDOWN",
+            "SELECT 1DELETE FROM dbo.t",
+            "SELECT 1use x",
+            "SELECT 1.5KILL 55",
+            "SELECT .5KILL 55",
+            "SELECT 2e3KILL 55",
+            "SELECT 1.5E-3DELETE FROM t",
+            "SELECT 1EXEC sp_who",
+            "SELECT 0x1FKILL 55",
+            "SELECT 0x1FDELETE FROM t",
+            "SELECT 0xABINTO t"
+        ).foreach { sql =>
+            val msg = refusal(sql)
+            assert(msg == NumberJoined, sql + " -> " + msg)
+            assert(problem(sql).contains(NumberJoined), sql)
+        }
+        // any other form ending right before the keyword is still refused
+        Seq("SELECT 1.KILL 55", "SELECT 1e+KILL 55", "SELECT 0xKILL 55").foreach { sql =>
+            intercept[DatrisException](SqlServerQueryUtil.validateQuery(sql))
+        }
     }
 }
