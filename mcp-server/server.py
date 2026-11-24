@@ -2747,6 +2747,8 @@ def _base_tools():
                 "the pipeline's config — same connection the loader uses, credentials never leave the server. "
                 "Only works for pipelines whose destination is Snowflake (database with useSnowflake=true). "
                 "Allowed statements: SELECT (WITH/CTE), SHOW, and DESCRIBE — LIMIT is auto-appended to SELECTs. "
+                "One statement per query: semicolons and the ->> operator are refused (string literals included); "
+                "to filter SHOW output, query information_schema instead. "
                 "Omit `sql` to preview the pipeline's destination table (the 'did my load land?' check). "
                 "Metadata discovery uses the same tool — there are no separate list_snowflake_* tools: "
                 "`SHOW DATABASES`, `SHOW SCHEMAS IN DATABASE <db>`, `SHOW TABLES IN SCHEMA <db>.<schema>`, "

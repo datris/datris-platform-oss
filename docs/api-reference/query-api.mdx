@@ -252,8 +252,8 @@ The `sql` field echoes the query that actually ran, including any automatically 
 
 - **Query length** — query text longer than 1,000,000 characters, counted as sent (surrounding spaces included), is rejected with `Query text is too long: <n> characters (the limit is 1000000)`. Only the API key, the request's parameters, the access checks and the `limit` value are checked before it; nothing in the query itself is.
 - **Read-only allowlist** — queries must start with `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, or `DESC`. `SHOW`/`DESCRIBE` are allowed so agents can discover databases, schemas, tables, and columns.
-- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `CALL`, `EXECUTE`, `EXEC`, `PUT`, `REMOVE`, `COPY`, `MERGE`, or `USE` are rejected (`USE` is blocked so a query cannot re-point the session at another database or role)
-- **No stacked queries** — semicolons are not allowed
+- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `CALL`, `EXECUTE`, `EXEC`, `PUT`, `REMOVE`, `COPY`, `MERGE`, `USE`, or the statement word that restores a dropped object are rejected (`USE` is blocked so a query cannot re-point the session at another database or role)
+- **One statement** — a query is one statement. Semicolons are rejected, and so is Snowflake's `->>` flow operator, which runs a further statement after the first (`Chained statements are not allowed in queries (the ->> operator)`). The operator check covers string literals and quoted identifiers too, and the operator's characters separated by whitespace or `//` comments; to match text that holds the operator, build the value (`'-' || '>>'`). A lambda arrow (`x -> x > 1`) is fine.
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
 - **LIMIT enforcement** — if a `SELECT`/`WITH` query has no `LIMIT`, one is appended using the request's `limit` value. `SHOW`/`DESCRIBE` output is row-capped at the same value.
 - **Function blocklist** — a query that names a `SYSTEM$` function anywhere is rejected with the function named (`Query contains blocked function: <name>`), except the read-only `SYSTEM$TYPEOF`, `SYSTEM$CLUSTERING_INFORMATION` and `SYSTEM$CLUSTERING_DEPTH`. This covers functions that cancel or abort other queries, sessions or transactions, resume pipes or tasks, or wait (`SYSTEM$CANCEL_QUERY`, `SYSTEM$ABORT_SESSION`, `SYSTEM$WAIT` and others). `NEXTVAL` and `GETNEXTVAL` are rejected anywhere, since reading them advances a sequence, and a call to `IDENTIFIER(...)` is rejected, since it can name any function from a string (this includes `FROM IDENTIFIER('<table>')`; write the table name instead). Like the statement blocklist, the check covers string literals too.
@@ -269,7 +269,7 @@ Returns `400 Bad Request` with `{"error": "..."}` when:
 
 - The pipeline is not found
 - The pipeline does not have a Snowflake destination
-- The SQL fails validation (allowlist, blocklist, semicolons, comments)
+- The SQL fails validation (allowlist, blocklist, semicolons, chained statements, comments)
 
 ---
 

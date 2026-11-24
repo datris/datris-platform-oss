@@ -34,7 +34,12 @@ object SnowflakeQueryUtil {
 
     // Write/DDL verbs (shared with Postgres) plus Snowflake-specific data
     // movement and session verbs. USE is blocked so a query can't re-point the
-    // session at another database/role than the pipeline's config.
+    // session at another database/role than the pipeline's config. The last
+    // entry, the word that restores a dropped object (`\bDROP\b` does not
+    // match inside it), is a second line: it can only start a statement, and
+    // a second statement is refused by the semicolon and chained-statement
+    // checks. It is built from two parts so this source does not spell out a
+    // statement word the released checks let through.
     private val BLOCKED_KEYWORDS = Set(
         "INSERT",
         "UPDATE",
@@ -52,7 +57,8 @@ object SnowflakeQueryUtil {
         "REMOVE",
         "COPY",
         "MERGE",
-        "USE"
+        "USE",
+        "UN" + "DROP"
     )
 
     /** Functions a read can call that act outside the query: cancel or abort
@@ -152,6 +158,42 @@ object SnowflakeQueryUtil {
     private def endsComment(cp: Int): Boolean = Character.getType(cp) match {
         case Character.CONTROL | Character.LINE_SEPARATOR | Character.PARAGRAPH_SEPARATOR => true
         case _ => false
+    }
+
+    /** Whether `sql` holds Snowflake's flow operator (`-`, `>`, `>`), which
+      * runs a further statement after the first: a `-`, then a `>` at the end
+      * of the [[gapEnds]] gap after it, then another `>` at the end of the
+      * gap after that. Anywhere in the text, string literals and quoted
+      * identifiers included, so no scanner of Snowflake's quoting is needed.
+      * One [[gapEnds]] table, built only when the text holds both a `-` and a
+      * `>`, then constant work per `-`: linear in the text's length.
+      *
+      * Vendor check, 2026-11-24 (docs.snowflake.com "Flow operators" and the
+      * "SQL operators" overview, read, not run against an account): the
+      * operator chains SQL statements, any statement may follow it, the chain
+      * runs as one anonymous block and client drivers see one statement; it
+      * is the only flow operator. Snowflake has no JSON operator of that
+      * shape, and the lambda arrow (`-` then one `>`) cannot be followed by
+      * another `>` in valid text. Not confirmed: whether the store accepts a
+      * gap between the operator's characters (refused regardless), whether
+      * scripting statements may follow it, and that the JDBC driver passes a
+      * chain through `executeQuery`. */
+    private[util] def chainedStatement(sql: String): Boolean = {
+        if (sql.indexOf('-') < 0 || sql.indexOf('>') < 0) return false
+        val n = sql.length
+        val ends = gapEnds(sql)
+        var i = 0
+        while (i < n) {
+            if (sql.charAt(i) == '-') {
+                val j = ends(i + 1)
+                if (j < n && sql.charAt(j) == '>') {
+                    val k = ends(j + 1)
+                    if (k < n && sql.charAt(k) == '>') return true
+                }
+            }
+            i += 1
+        }
+        false
     }
 
     // BLOCKED_FUNCTIONS entries refused only as calls rather than as whole words.
@@ -284,9 +326,13 @@ object SnowflakeQueryUtil {
         if (!allowed)
             throw new DatrisException("Only read-only statements are allowed: SELECT (WITH/CTE), SHOW, and DESCRIBE")
 
-        // Reject stacked queries (semicolons remaining after stripping trailing one)
+        // One statement per query: a second statement can follow the first
+        // only after a semicolon (any left after stripping the trailing one)
+        // or the flow operator; both are refused.
         if (normalized.contains(";"))
             throw new DatrisException("Semicolons are not allowed in queries")
+        if (chainedStatement(normalized))
+            throw new DatrisException("Chained statements are not allowed in queries (the ->> operator)")
 
         // Reject SQL comments that could be used for obfuscation. Snowflake
         // also reads `//` as a line comment; that is not refused here (a URL
