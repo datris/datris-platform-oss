@@ -113,7 +113,8 @@ class PgIdentifierSpec extends AnyFunSuite {
         assert(kept(p62 + eAcute + "tail") == p62)
         assert(bytes(kept(p62 + eAcute)) == 62)
         // a three-byte letter starting at byte 62 or 63
-        assert(kept("a" * 61 + euro) == "a" * 61 + euro) // ends exactly at 63
+        assert(kept("a" * 60 + euro) == "a" * 60 + euro) // 60 + 3 = 63: ends exactly at byte 63
+        assert(kept("a" * 61 + euro) == "a" * 61) // 61 + 3 = 64: the whole character goes
         assert(kept("a" * 62 + euro) == "a" * 62)
         assert(kept("a" * 61 + "b" + euro) == "a" * 61 + "b")
         // a four-byte letter straddling byte 63: no lone surrogate is kept
