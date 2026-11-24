@@ -155,4 +155,224 @@ class SnowflakeQueryValidationSpec extends AnyFunSuite {
         refusedNaming("SELECT SYSTEM$TYPEOF\u017F(1)", "SYSTEM$TYPEOFS")
         validate("SELECT SYSTEM$TYPEOF(a), system_status FROM t WHERE u = 'https://example.com/x'")
     }
+
+    // ---- chained statements (plans/stories/snowflake-chained-statements-refused.md) ----
+    //
+    // Snowflake's flow operator (`-`, `>`, `>`) runs a further statement after
+    // the first. The story refuses it anywhere in the text, string literals and
+    // quoted identifiers included (Decisions 1 and 2), also with a gap between
+    // its characters (Decision 5), with the Decision 4 text. The gap is the one
+    // a called name and its parenthesis may have: whitespace, Unicode
+    // separators, control and format characters, `//` line comments. Chains
+    // in this section are read-to-read only.
+
+    private val Chained = "Chained statements are not allowed in queries (the ->> operator)"
+
+    private def refusedChained(sql: String): Unit = {
+        val e = intercept[DatrisException](validate(sql))
+        assert(e.getMessage == Chained, sql + " -> " + e.getMessage)
+    }
+
+    test("statements chained with the flow operator are refused with the rule named") {
+        val firsts = Seq(
+            "SELECT a FROM t",
+            "select a from t where b > 1",
+            "WITH x AS (SELECT a FROM t) SELECT a FROM x",
+            "SHOW TABLES IN SCHEMA SALES_DB.PUBLIC",
+            "DESCRIBE TABLE SALES_DB.PUBLIC.STOCK_PRICE",
+            "DESC TABLE t"
+        )
+        firsts.foreach { first =>
+            refusedChained(first + " ->> SELECT \"name\" FROM $1")
+            refusedChained(first + "->>SELECT \"name\" FROM $1")
+            refusedChained(first + " ->>SELECT 1")
+            refusedChained(first + "->> SELECT 1")
+        }
+        // a chain of three
+        refusedChained("SHOW TABLES ->> SELECT \"name\" FROM $1 ->> SELECT COUNT(*) FROM $2")
+        refusedChained("SELECT 1->>SELECT 2->>SELECT 3")
+        // a trailing semicolon after the chain does not change the rule named
+        refusedChained("SELECT a FROM t ->> SELECT 1;")
+    }
+
+    // Gaps the story lists: space, tab, newline, a control character, no-break
+    // space, ideographic space, em space, zero-width space, line separator,
+    // and a `//` comment ended by a newline.
+    private val OperatorGaps = Seq(" ", "\t", "\n", "\u0001", "\u00A0", "\u3000", "\u2003", "\u200B", "\u2028", "//x\n")
+
+    private def splitOperators(gap: String): Seq[String] = Seq("-" + gap + ">>", "->" + gap + ">", "-" + gap + ">" + gap + ">")
+
+    test("the flow operator is refused with whitespace, control or format characters or a line comment between its characters") {
+        OperatorGaps.foreach { gap =>
+            splitOperators(gap).foreach { op =>
+                refusedChained("SELECT a FROM t " + op + " SELECT b FROM u")
+                refusedChained("SHOW TABLES" + op + "SELECT 1")
+            }
+        }
+    }
+
+    test("the gap inside the flow operator is the same gap a called name and its parenthesis may have") {
+        // U+E0001 LANGUAGE TAG: a format character outside the Basic Multilingual Plane
+        val nonBmpFormat = new String(Character.toChars(0xe0001))
+        Seq(
+            "  \t ",
+            "\u000B",
+            "\u0085",
+            "\u2029",
+            "\uFEFF",
+            nonBmpFormat,
+            // comments ended by a line separator, a paragraph separator, NEL, a control character
+            "//x\u2028",
+            "//x\u2029",
+            "//x\u0085",
+            "// a\u000B",
+            // runs mixing them
+            " //a\n //b\n ",
+            "\u00A0//x\n\u200B",
+            "//x\n" + nonBmpFormat + "//y\n",
+            // the comment text may hold anything up to its end
+            "// > - ( x\n"
+        ).foreach { gap =>
+            splitOperators(gap).foreach(op => refusedChained("SELECT a FROM t " + op + " SELECT b FROM u"))
+        }
+    }
+
+    test("the flow operator inside a string literal or a quoted identifier is refused too") {
+        refusedChained("SELECT a FROM t WHERE col = 'x ->> y'")
+        refusedChained("SELECT a FROM t WHERE col = '->>'")
+        refusedChained("SELECT \"a->>b\" FROM t")
+        refusedChained("SELECT a AS \"->>\" FROM t")
+        refusedChained("SELECT a FROM t WHERE col = $$ ->> $$")
+        // split forms inside a literal too
+        refusedChained("SELECT a FROM t WHERE col = '- >>'")
+        refusedChained("SELECT a FROM t WHERE col = '-> >'")
+    }
+
+    test("a lambda arrow, a subtraction beside a comparison and a literal holding part of the operator are accepted") {
+        Seq(
+            // the story's list
+            "SELECT FILTER(arr, x -> x > 1) FROM t",
+            "SELECT TRANSFORM(arr, x -> x - 1) FROM t",
+            "SELECT a - b FROM t WHERE c > d",
+            "SELECT a FROM t WHERE a >= 1 AND b - 1 > 2",
+            "SELECT a FROM t WHERE note = 'a -> b'",
+            "SELECT a FROM t WHERE note = '>>'",
+            "SELECT a FROM t WHERE u = 'https://example.com/x'",
+            // the single arrow next to a comparison, with and without spaces
+            "SELECT FILTER(arr, x->x>1) FROM t",
+            "SELECT FILTER(arr, x -> x >= 1), TRANSFORM(arr, y -> y - 1) FROM t",
+            // `>` and `>>` without the minus in front
+            "SELECT a FROM t WHERE a > 1 AND b > 2",
+            "SELECT a FROM t WHERE a >> 1 > 0",
+            "SELECT '>>' AS m, '>' AS n FROM t",
+            // a minus, then other tokens, then `>>`
+            "SELECT a - b AS d FROM t WHERE note = '>>'",
+            "SELECT a -1 FROM t WHERE c > -1 AND note = '>>'",
+            "SELECT a - //x\n b FROM t WHERE note = '>>'",
+            "SELECT a - 1 //x\n FROM t WHERE b > 2",
+            "SELECT a FROM t WHERE note = '- > x'",
+            "SELECT a FROM t WHERE x = '->' AND y = '>'",
+            // the workaround the story gives for a literal holding the operator
+            "SELECT a FROM t WHERE note = '-' || '>>'",
+            "SELECT a FROM t WHERE note LIKE '%' || '-' || '>>' || '%'"
+        ).foreach(sql => withClue(sql + " -> ")(validate(sql)))
+    }
+
+    // Timing: many starts, one warm-up, one bound (the story's two seconds),
+    // each call on its own daemon thread that is stopped at the bound.
+    private val ChainBoundMillis = 2000L
+    private val ChainStarts = 40000
+
+    /** None when validation accepts, Some(message) when it refuses with a
+      * DatrisException. Fails when it does not return within the bound. */
+    private def chainOutcome(label: String, sql: String): Option[String] = {
+        @volatile var result: Either[Throwable, Option[String]] = null
+        val t = new Thread(
+            new Runnable {
+                def run(): Unit =
+                    result =
+                        try { validate(sql); Right(None) }
+                        catch {
+                            case e: DatrisException => Right(Some(e.getMessage))
+                            case e: Throwable => Left(e)
+                        }
+            },
+            "bounded-chain-validation"
+        )
+        t.setDaemon(true)
+        val started = System.nanoTime()
+        t.start()
+        t.join(ChainBoundMillis)
+        if (t.isAlive) {
+            val ms = (System.nanoTime() - started) / 1000000L
+            t.setPriority(Thread.MIN_PRIORITY)
+            try classOf[Thread].getMethod("stop").invoke(t)
+            catch { case _: Throwable => () }
+            t.join(2000L)
+            val state = if (t.isAlive) "still running at minimum priority" else "stopped"
+            fail(label + " (" + sql.length + " characters): did not return within " + ChainBoundMillis + " ms (" + state + " after " + ms + " ms)")
+        }
+        result match {
+            case Left(e) => throw e
+            case Right(r) => r
+        }
+    }
+
+    private def warmedOutcome(label: String, sql: String): Option[String] = {
+        assert(sql.length < 1000000, label + ": the text must be under the length limit")
+        chainOutcome("warm-up", "SELECT a FROM t WHERE b = 1")
+        chainOutcome(label, sql)
+    }
+
+    test("validation of a long run of operator characters and line comments returns promptly") {
+        // the story's three runs, inside an otherwise valid SELECT: accept or refuse, within the bound
+        warmedOutcome("20,000 minus signs in a literal", "SELECT a FROM t WHERE b = '" + ("-" * 20000) + "'")
+        warmedOutcome("20,000 single arrows in a literal", "SELECT a FROM t WHERE b = '" + ("->" * 20000) + "'")
+        warmedOutcome("20,000 line comments", "SELECT a " + ("//x\n" * 20000) + "FROM t")
+
+        def accepted(label: String, sql: String): Unit = {
+            val r = warmedOutcome(label, sql)
+            assert(r.isEmpty, label + " -> " + r)
+        }
+        def chained(label: String, sql: String): Unit = {
+            val r = warmedOutcome(label, sql)
+            assert(r.contains(Chained), label + " -> " + r)
+        }
+
+        // the same runs, ending in the operator
+        chained("single arrows, the last one completed", "SELECT a FROM t WHERE b = '" + ("->" * 20000) + ">'")
+        chained("a minus, 20,000 line comments, then the rest", "SELECT a FROM t -" + ("//x\n" * 20000) + ">" + ("//x\n" * 20000) + "> SELECT 1")
+        accepted("a minus, 20,000 line comments, then one comparison", "SELECT a FROM t WHERE b = 1 -" + ("//x\n" * 20000) + "> 1")
+
+        // many starts, each followed by a long run of what may sit between the characters
+        accepted("minus signs separated by spaces", "SELECT a " + ("- " * ChainStarts) + "1 FROM t")
+        chained("minus signs separated by spaces, then the rest", "SELECT a " + ("- " * ChainStarts) + ">> 1")
+        accepted("arrows separated by format and space characters", "SELECT a " + ("->\u200B\u00A0" * ChainStarts) + "1 FROM t")
+        // one comment line holding every start: each start's gap runs to the end of the line
+        accepted("minus signs each opening a comment on one line", "SELECT a FROM t " + ("-//" * ChainStarts) + "\n1")
+        accepted("arrows each opening a comment on one line", "SELECT a FROM t " + ("->//" * ChainStarts) + "\n1")
+        chained("arrows each opening a comment on one line, then the last character", "SELECT a FROM t " + ("->//" * ChainStarts) + "\n> SELECT 1")
+        accepted("arrows then one long comment line per arrow", "SELECT a FROM t " + ("->//x\n" * ChainStarts) + "1")
+    }
+
+    // The keyword that restores a dropped object (Decision 3), built here so
+    // this source does not spell out a statement word released checks let through.
+    private val RestoreKeyword = "UN" + "DROP"
+
+    test("the keyword that restores a dropped object is refused as a blocked keyword in any letter case; a column whose name begins with it is accepted") {
+        cases(RestoreKeyword).foreach { w =>
+            Seq(
+                "SELECT a FROM t WHERE note = '" + w + "'",
+                "SELECT \"" + w + "\" FROM t",
+                "SELECT a AS " + w + " FROM t",
+                "WITH x AS (SELECT 1 AS " + w + ") SELECT * FROM x"
+            ).foreach { sql =>
+                val e = intercept[DatrisException](validate(sql))
+                assert(e.getMessage == "Query contains blocked keyword: " + RestoreKeyword, sql + " -> " + e.getMessage)
+            }
+        }
+        val column = RestoreKeyword.toLowerCase(Locale.ROOT) + "ped_at"
+        validate("SELECT " + column + " FROM t")
+        validate("SELECT a FROM t ORDER BY " + column)
+    }
 }
