@@ -116,6 +116,15 @@ object DatabricksQueryUtil {
         "identifier"
     )
 
+    // [[firstCall]] tries an entry only at a backtick or at the entry's
+    // first character, compared in lower case: an entry that starts any other
+    // way (a group, a class, an upper-case letter) would never be tried and
+    // would refuse nothing, so it fails here when the object loads.
+    require(
+        BLOCKED_FUNCTIONS.forall(fn => fn.nonEmpty && fn.charAt(0) >= 'a' && fn.charAt(0) <= 'z'),
+        "every DatabricksQueryUtil.BLOCKED_FUNCTIONS entry must start with a lower-case ASCII letter"
+    )
+
     // Between a called name and its `(`: whitespace taken widely (ASCII,
     // Unicode separators, control and format characters; the Spark lexer
     // hides Unicode space separators too). Wider than the store errs toward

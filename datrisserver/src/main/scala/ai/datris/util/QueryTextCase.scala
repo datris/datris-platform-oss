@@ -41,10 +41,6 @@ object QueryTextCase {
         upper(s.substring(0, end))
     }
 
-    /** Whether `upper(s)` starts with `word` (ASCII upper case). */
-    def upperStartsWith(s: String, word: String): Boolean =
-        upperPrefix(s, word.length).startsWith(word)
-
     private def convert(s: String, upperCase: Boolean): String = {
         val n = s.length
         val out = new java.lang.StringBuilder(n + 16)

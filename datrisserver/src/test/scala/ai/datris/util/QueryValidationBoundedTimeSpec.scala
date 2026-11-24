@@ -378,4 +378,24 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
                 assert(r.contains(tooLong(Limit + 1)), name + " -> " + r)
         }
     }
+
+    // ---- review round 2 ----
+
+    // U+0301 COMBINING ACUTE ACCENT.
+    private val CombiningMark = "́"
+
+    test("a long run of combining marks validates within the bound on all four") {
+        val afterLetter = "SELECT a" + (CombiningMark * ExpandingRun)
+        val thenWords = "SELECT a" + (CombiningMark * ExpandingRun) + (" b" * (ExpandingRun / 4)) + " FROM t"
+        Validators.foreach {
+            case (name, _) =>
+                accepted(name, "a run of combining marks after a letter", afterLetter)
+                accepted(name, "half the text combining marks, then short words", thenWords)
+        }
+    }
+
+    test("every Databricks listed function starts with a lower-case ASCII letter") {
+        val entries = DatabricksQueryUtil.BLOCKED_FUNCTIONS
+        assert(entries.forall(fn => fn.nonEmpty && fn.charAt(0) >= 'a' && fn.charAt(0) <= 'z'), entries)
+    }
 }
