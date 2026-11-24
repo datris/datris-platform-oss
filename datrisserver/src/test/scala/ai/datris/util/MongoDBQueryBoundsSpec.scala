@@ -246,9 +246,9 @@ class MongoDBQueryBoundsSpec extends AnyFunSuite with BeforeAndAfterEach {
     }
 
     // Decision 2 (not an Acceptance line of its own): the bundled default.
-    test("without DATRIS_QUERY_MAX_RESULT_MB the ceiling is 256 MB of JSON text") {
+    test("without DATRIS_QUERY_MAX_RESULT_MB the ceiling is 32 MB of JSON text") {
         assume(sys.env.get("DATRIS_QUERY_MAX_RESULT_MB").isEmpty, "DATRIS_QUERY_MAX_RESULT_MB is set in this shell")
         val c = savedCeiling.getOrElse(ceiling())
-        assert(c == 256L * Mb || c == 256L * 1000L * 1000L, "maxResultBytes is " + c)
+        assert(c == 32L * Mb || c == 32L * 1000L * 1000L, "maxResultBytes is " + c)
     }
 }

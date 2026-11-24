@@ -44,22 +44,32 @@ object MongoDBQueryUtil {
 
     private val BytesPerMb: Long = 1024L * 1024L
 
-    /** Default result-size ceiling, in MB (1024 x 1024) of JSON text. */
-    private[util] val DEFAULT_MAX_RESULT_MB = 256L
+    /** Default result-size ceiling, in MB (1024 x 1024) of JSON text. Small
+      * on purpose: while answering, the route holds the JSON strings, the
+      * parsed documents and the serialised body at once, several times the
+      * JSON text size in heap. */
+    private[util] val DEFAULT_MAX_RESULT_MB = 32L
 
-    /** The result-size ceiling in MB: `DATRIS_QUERY_MAX_RESULT_MB` (or the
-      * `datris.queryMaxResultMb` system property), default
-      * [[DEFAULT_MAX_RESULT_MB]], `0` = no ceiling. A blank, non-numeric or
-      * negative value falls back to the default with one warning. */
-    private def configuredMaxResultMb(): Long =
-        sys.props.get("datris.queryMaxResultMb").orElse(sys.env.get("DATRIS_QUERY_MAX_RESULT_MB")) match {
+    /** The largest ceiling in MB whose byte count fits in a Long. */
+    private[util] val MAX_RESULT_MB_LIMIT: Long = Long.MaxValue / BytesPerMb
+
+    private val MaxResultMbVariable = "DATRIS_QUERY_MAX_RESULT_MB"
+
+    /** The result-size ceiling in MB from the value of
+      * `DATRIS_QUERY_MAX_RESULT_MB`: unset gives [[DEFAULT_MAX_RESULT_MB]],
+      * `0` = no ceiling, a whole number is used as given (surrounding spaces
+      * ignored; a value too large to count in bytes is clamped to
+      * [[MAX_RESULT_MB_LIMIT]]). A blank, non-numeric, fractional or negative
+      * value falls back to the default with one warning naming the variable. */
+    private[util] def parseMaxResultMb(raw: Option[String]): Long =
+        raw match {
             case None => DEFAULT_MAX_RESULT_MB
-            case Some(raw) =>
-                Try(raw.trim.toLong).toOption.filter(_ >= 0) match {
-                    case Some(mb) => mb
+            case Some(value) =>
+                Try(BigInt(value.trim)).toOption.filter(_ >= 0) match {
+                    case Some(mb) => if (mb > BigInt(MAX_RESULT_MB_LIMIT)) MAX_RESULT_MB_LIMIT else mb.toLong
                     case None =>
                         logger.warn(
-                            "DATRIS_QUERY_MAX_RESULT_MB is not a whole number of MB >= 0; using the default of " +
+                            MaxResultMbVariable + "=\"" + value + "\" is not a whole number of MB >= 0; using the default of " +
                                 DEFAULT_MAX_RESULT_MB + " MB"
                         )
                         DEFAULT_MAX_RESULT_MB
@@ -69,20 +79,22 @@ object MongoDBQueryUtil {
     /** The most JSON text (characters of the serialised documents; one byte
       * each for ASCII) a query may return, read once at load. `0` = no
       * ceiling. A `var` so a spec can set it. */
-    @volatile private[datris] var maxResultBytes: Long = configuredMaxResultMb().min(Long.MaxValue / BytesPerMb) * BytesPerMb
+    @volatile private[datris] var maxResultBytes: Long = parseMaxResultMb(sys.env.get(MaxResultMbVariable)) * BytesPerMb
+
+    /** What both refusals tell the caller to do instead. */
+    private val SplitAdvice = "split the read into ranges with a filter, each with a positive limit."
 
     /** A query that did not finish within its time limit (the server's
       * `maxTime` or the client's socket read timeout). */
     final class QueryTimeLimitException(seconds: Int)
         extends DatrisException(
-            "The query did not finish within its time limit of " + seconds +
-                " seconds; narrow the filter or page the read with a positive limit."
+            "The query did not finish within its time limit of " + seconds + " seconds; " + SplitAdvice
         )
 
     /** A result larger than [[maxResultBytes]]. */
     final class ResultTooLargeException(ceilingBytes: Long)
         extends DatrisException(
-            "The result is larger than " + formatMb(ceilingBytes) + " MB; page the read with a filter and a positive limit."
+            "The result is larger than " + formatMb(ceilingBytes) + " MB; " + SplitAdvice
         )
 
     private def formatMb(bytes: Long): String =
@@ -199,6 +211,7 @@ object MongoDBQueryUtil {
         var total = 0L
         try {
             val it = find.iterator()
+            var primary: Throwable = null
             try {
                 while (it.hasNext) {
                     val json = it.next().toJson(jsonSettings)
@@ -212,8 +225,18 @@ object MongoDBQueryUtil {
                     }
                     results.add(json)
                 }
+            } catch {
+                case t: Throwable =>
+                    primary = t
+                    throw t
             } finally {
-                it.close()
+                // A failure to close never replaces what the read itself threw.
+                try it.close()
+                catch {
+                    case closeFailure: Exception =>
+                        if (primary != null) primary.addSuppressed(closeFailure)
+                        else logger.warn("MongoDB query: closing the cursor failed: " + closeFailure.getClass.getName)
+                }
             }
         } catch {
             case _: MongoExecutionTimeoutException | _: MongoSocketReadTimeoutException =>
@@ -223,6 +246,15 @@ object MongoDBQueryUtil {
         results
     }
 
+    /** Settings for a query's client: the connection string, and a socket
+      * read timeout of the query's time limit plus
+      * [[SOCKET_READ_MARGIN_SECONDS]]. */
+    private[util] def clientSettings(connectionString: String, timeLimitSeconds: Int): com.mongodb.MongoClientSettings =
+        com.mongodb.MongoClientSettings.builder()
+            .applyConnectionString(new com.mongodb.ConnectionString(connectionString))
+            .applyToSocketSettings(b => b.readTimeout(timeLimitSeconds + SOCKET_READ_MARGIN_SECONDS, TimeUnit.SECONDS))
+            .build()
+
     /** One client per query, closed by [[query]]. Its socket read timeout is
       * the query's time limit plus [[SOCKET_READ_MARGIN_SECONDS]], so an
       * unlimited read gets the longer one. The test seam ignores the limit. */
@@ -231,10 +263,7 @@ object MongoDBQueryUtil {
         if (factory != null) factory()
         else {
             val secrets = SecretsRetrieverUtil.mongoDbSecrets()
-            val settings = com.mongodb.MongoClientSettings.builder()
-                .applyConnectionString(new com.mongodb.ConnectionString(secrets.connectionString))
-                .applyToSocketSettings(b => b.readTimeout(timeLimitSeconds + SOCKET_READ_MARGIN_SECONDS, TimeUnit.SECONDS))
-                .build()
+            val settings = clientSettings(secrets.connectionString, timeLimitSeconds)
             com.mongodb.client.MongoClients.create(settings)
         }
     }

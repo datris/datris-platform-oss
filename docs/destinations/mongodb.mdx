@@ -84,7 +84,7 @@ The Assistant (and any MCP client) can read a MongoDB destination back without l
 
 The REST endpoint is `POST /api/v1/query/mongodb` ([Query API](/api-reference/query-api#query-mongodb)); a key needs the `query:mongodb` capability (included in the `read-only` and `reporting` templates). The CLI equivalent is `datris query-mongo <collection> --filter '{...}' --limit 20`.
 
-Every query has a time limit: 30 seconds, or 5 minutes with `limit: -1`, enforced on the MongoDB server. A result larger than 256 MB of JSON text (`DATRIS_QUERY_MAX_RESULT_MB`, `0` = none) is refused with a message rather than cut short, whatever the limit. Either answers `400`; page a large read with a filter and a positive `limit`. See [Query API](/api-reference/query-api#query-mongodb).
+Every query has a time limit: 30 seconds, or 5 minutes with `limit: -1`, enforced on the MongoDB server. A result larger than 32 MB of JSON text (`DATRIS_QUERY_MAX_RESULT_MB`, `0` = none) is refused with a message rather than cut short, whatever the limit. Either answers `400`. To read a large collection, split the read into disjoint ranges with a filter (for example ranges of `_id` or of a timestamp) and read each range separately; a positive `limit` on each call is a guard, not the way to page, because the query has no sort. See [Query API](/api-reference/query-api#query-mongodb).
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/query/mongodb \
