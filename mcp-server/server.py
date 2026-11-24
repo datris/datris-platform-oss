@@ -2757,6 +2757,9 @@ def _base_tools():
                 "targeted and let the default LIMIT stand unless the user asks for more. "
                 "SYSTEM$ functions (except SYSTEM$TYPEOF and the clustering functions), NEXTVAL, GETNEXTVAL and "
                 "IDENTIFIER(...) calls are refused. "
+                "Calls to a model or a search or agent service are refused too: any function whose name begins AI_, "
+                "anything in the SNOWFLAKE.CORTEX schema, CORTEX_SEARCH_BATCH, and method calls written with ! "
+                "(name!METHOD(...)), string literals included; != and the VECTOR_* functions are fine. "
                 "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={

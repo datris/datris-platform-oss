@@ -201,6 +201,35 @@ object SnowflakeQueryUtil {
         gap
     }
 
+    /** A target that a gap starting at `start` reaches under some reading,
+      * given the [[gapReaches]] table `gap` built for the same `isTarget`; -1
+      * when `gap(start)` is false. Walks forward once, guided by the table:
+      * inside a comment it ends the comment at a candidate end only where the
+      * gap after it still reaches a target (at a line feed it must end, and
+      * the table then says the gap after it reaches one). Each step moves
+      * forward, so it takes time in proportion to the text's length. Used
+      * only to name what is refused. */
+    private def walkToTarget(text: String, gap: Array[Boolean], isTarget: Int => Boolean, start: Int): Int = {
+        val n = text.length
+        if (start > n || !gap(start)) return -1
+        var s = start
+        var inComment = false
+        var found = -1
+        while (found < 0 && s < n) {
+            val cp = text.codePointAt(s)
+            val next = math.min(n, s + Character.charCount(cp))
+            if (!inComment) {
+                if (isTarget(s)) found = s
+                else if (isGapCharacter(cp)) s = next
+                else { s += 2; inComment = true } // the `//` that opens a comment
+            } else {
+                if (cp == '\n' || (endsComment(cp) && gap(next))) inComment = false
+                s = next
+            }
+        }
+        found
+    }
+
     /** Whether `sql` holds Snowflake's flow operator (`-`, `>`, `>`), which
       * runs a further statement after the first: a `-`, then a gap, a `>`,
       * a gap and a `>`, where each gap is read as [[gapReaches]] reads it
@@ -278,6 +307,287 @@ object SnowflakeQueryUtil {
         Iterator(sql, QueryTextCase.upper(sql))
             .flatMap(functionsUsed)
             .find(name => !SYSTEM_FUNCTION_ALLOWLIST.contains(name))
+            .orElse(modelOrServiceCall(sql))
+
+    // ---- calls to a model, a search or agent service, or a model's methods ----
+    //
+    // These send row values to a hosted model and bill per token, run a search
+    // or agent service, start a fine-tuning job, or run a trained model, and
+    // on an account left at its defaults every role may call them: PUBLIC
+    // holds the SNOWFLAKE.CORTEX_USER database role and the USE AI FUNCTIONS
+    // privilege. As with BLOCKED_FUNCTIONS this is a second line; the role's
+    // grants are the control. Every name is refused, the helpers that call no
+    // model (AI_COUNT_TOKENS, SNOWFLAKE.CORTEX.COUNT_TOKENS and the SPLIT_TEXT_*
+    // functions) included. Accepted: the VECTOR_* functions (arithmetic on
+    // stored vectors), TO_FILE, TRY_TO_FILE, PROMPT, FL_*,
+    // CORTEX_SEARCH_DATA_SCAN, CORTEX_SEARCH_REFRESH_HISTORY,
+    // SNOWFLAKE.LOCAL.GET_AI_*, other SNOWFLAKE schemas such as ML, and
+    // unqualified Cortex names (a query cannot set its search path to
+    // SNOWFLAKE.CORTEX: USE and ALTER are refused, one statement per connection).
+    //
+    // Vendor check, 2026-11-24 (docs.snowflake.com/en, read, not run against an
+    // account). Confirmed: the AI_ functions AI_COMPLETE, AI_CLASSIFY,
+    // AI_FILTER, AI_AGG, AI_EMBED, AI_MULTI_EMBED, AI_EXTRACT, AI_SENTIMENT,
+    // AI_SUMMARIZE, AI_SUMMARIZE_AGG, AI_SIMILARITY, AI_TRANSCRIBE,
+    // AI_PARSE_DOCUMENT, AI_REDACT, AI_TRANSLATE, AI_COUNT_TOKENS,
+    // AI_FUNCTION_EVALUATION, AI_FUNCTION_OPTIMIZATION; in SNOWFLAKE.CORTEX:
+    // COMPLETE, TRY_COMPLETE, CLASSIFY_TEXT, EXTRACT_ANSWER, SENTIMENT,
+    // ENTITY_SENTIMENT, TRANSLATE, EMBED_TEXT_768, EMBED_TEXT_1024,
+    // PARSE_DOCUMENT, SEARCH_PREVIEW, AGENT_RUN, DATA_AGENT_RUN,
+    // THREAD_MESSAGES, FINETUNE, COUNT_TOKENS, SPLIT_TEXT_RECURSIVE_CHARACTER,
+    // SPLIT_TEXT_MARKDOWN_HEADER; CORTEX_SEARCH_BATCH (queries a search
+    // service); the model methods <model>!PREDICT and <model>!FORECAST; the
+    // default grants to PUBLIC above. Not confirmed: whether Snowflake accepts
+    // a gap or comment around the dots of a qualified name (refused
+    // regardless), the document-model !PREDICT form, the cost of
+    // AI_COUNT_TOKENS, and whether Snowflake folds the non-ASCII letters of
+    // AsciiFolds in unquoted names (refused regardless).
+
+    /** Prefix of a function refused as a call: every Cortex AI function, a
+      * user function of that name too (as on Databricks). */
+    private[util] val AI_FUNCTION_PREFIX = "AI_"
+
+    /** The database and schema whose every name is refused, call or not. */
+    private[util] val CORTEX_DATABASE = "SNOWFLAKE"
+    private[util] val CORTEX_SCHEMA = "CORTEX"
+
+    /** Unqualified names refused as calls. */
+    private[util] val CALL_ONLY_SERVICE_FUNCTIONS: Seq[String] = Seq("CORTEX_SEARCH_BATCH")
+
+    /** Every non-ASCII code point that some case rule maps to ASCII letters,
+      * with those letters in upper case: `toUpperCase` / `toLowerCase`
+      * (Locale.ROOT) of the code point as a string, `Character.toUpperCase`,
+      * `Character.toLowerCase`, and the per-character fold
+      * `String.equalsIgnoreCase` uses (`toLowerCase(toUpperCase(c))`). So the
+      * long s, the dotless i, the dotted capital I, the Kelvin sign, the
+      * sharp s (to `SS`) and the Latin ligatures (`FI`, `FL`, `FFI`, `ST`,
+      * ...) are here; on Java 17 no code point has two different ASCII
+      * results. Built once, by reading every assigned code point. */
+    private lazy val AsciiFolds: java.util.Map[Integer, String] = {
+        def asciiLetters(s: String): Boolean =
+            s.nonEmpty && s.forall(c => (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+        def str(cp: Int): String = new String(Character.toChars(cp))
+        val folds = new java.util.HashMap[Integer, String]()
+        var cp = 128
+        while (cp <= Character.MAX_CODE_POINT) {
+            Character.getType(cp) match {
+                case Character.UNASSIGNED | Character.SURROGATE | Character.PRIVATE_USE => ()
+                case _ =>
+                    val s = str(cp)
+                    Seq(
+                        s.toUpperCase(java.util.Locale.ROOT),
+                        s.toLowerCase(java.util.Locale.ROOT),
+                        str(Character.toUpperCase(cp)),
+                        str(Character.toLowerCase(cp)),
+                        str(Character.toLowerCase(Character.toUpperCase(cp)))
+                    ).find(asciiLetters).foreach(f => folds.put(cp, f.toUpperCase(java.util.Locale.ROOT)))
+            }
+            cp += 1
+        }
+        folds
+    }
+
+    /** `text` with every ASCII letter in upper case and every code point of
+      * [[AsciiFolds]] replaced by its ASCII letters; anything else is kept.
+      * Gap characters, `/`, `(`, `.`, `!` and `"` are never letters, so the
+      * gaps, comments and punctuation of the result are those of `text`. One
+      * pass by code point, constant work for each. */
+    private[util] def asciiFold(text: String): String = {
+        val n = text.length
+        val out = new java.lang.StringBuilder(n + 16)
+        var i = 0
+        while (i < n) {
+            val c = text.charAt(i)
+            if (c < 128) {
+                out.append(if (c >= 'a' && c <= 'z') (c - 32).toChar else c)
+                i += 1
+            } else {
+                val cp = text.codePointAt(i)
+                val f = AsciiFolds.get(cp)
+                if (f != null) out.append(f) else out.appendCodePoint(cp)
+                i += Character.charCount(cp)
+            }
+        }
+        out.toString
+    }
+
+    private def isAsciiNameChar(c: Char): Boolean =
+        (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
+
+    /** Whether the UTF-16 unit at `i` is part of a name: an ASCII letter,
+      * digit, `_` or `$`, or any non-ASCII code point that is not a gap
+      * character (taken widely, so a name runs on over what might belong to
+      * it). Both units of a surrogate pair give the answer of their code point. */
+    private def isNameUnit(text: String, i: Int): Boolean = {
+        val c = text.charAt(i)
+        if (c < 128) isAsciiNameChar(c)
+        else {
+            val cp =
+                if (Character.isLowSurrogate(c) && i > 0 && Character.isHighSurrogate(text.charAt(i - 1)))
+                    text.codePointAt(i - 1)
+                else text.codePointAt(i)
+            !isGapCharacter(cp)
+        }
+    }
+
+    /** The first call to a model, a search or agent service, or a model's
+      * method in `sql`, named in ASCII upper case:
+      *  - anything after `SNOWFLAKE` `.` `CORTEX` `.`, call or not, reported
+      *    as `SNOWFLAKE.CORTEX.<NAME>`;
+      *  - a name beginning [[AI_FUNCTION_PREFIX]] with at least one more name
+      *    character, as a call, reported as the name;
+      *  - a [[CALL_ONLY_SERVICE_FUNCTIONS]] name as a call;
+      *  - a method call: `!`, a gap, a name, a gap, `(`, reported as `!<NAME>`.
+      * A part may be in double quotes (`"SNOWFLAKE"`, `"AI_COMPLETE"`,
+      * `!"PREDICT"`). A gap is the one [[gapReaches]] reads (wide whitespace
+      * and `//` comments, every reading of where a comment ends), allowed
+      * before each `(`, on both sides of each dot of the prefix and on both
+      * sides of the `!`. A name is in front of `AI_`, `SNOWFLAKE` or
+      * `CORTEX_SEARCH_BATCH` only where no ASCII letter, digit, `_` or `$`
+      * is directly before it, as for `IDENTIFIER` (so `MY_SNOWFLAKE.CORTEX.`
+      * and `my_ai_complete(` are other names). Matched over the whole text,
+      * string literals included.
+      *
+      * Letter case: the rules run over [[asciiFold]] of the text, in which
+      * upper-casing, lower-casing and the `equalsIgnoreCase` fold of each
+      * code point all give the same ASCII letters, so a name spelled with a
+      * letter that any of them folds to ASCII is caught.
+      *
+      * Linear in the text's length for any input: each rule finds a fixed
+      * literal (`AI_`, `SNOWFLAKE`, `CORTEX_SEARCH_BATCH`, `!`) by a plain
+      * search, then answers each place it is found with a constant number of
+      * lookups in tables of one backward pass each: where a name ends, where
+      * a double-quoted name starting at a position closes, whether a gap
+      * reaches `(` ([[gapReaches]]), and, for the prefix and the method, a
+      * [[gapReaches]] table per step whose targets read only the table
+      * before. No regex, so nothing is rescanned from many starts. Naming
+      * what is refused walks forward once ([[walkToTarget]]). */
+    private[util] def modelOrServiceCall(sql: String): Option[String] = {
+        val f = asciiFold(sql)
+        val n = f.length
+        def at(i: Int): Char = if (i >= 0 && i < n) f.charAt(i) else ' '
+        def nameBoundaryBefore(p: Int): Boolean = p == 0 || !isAsciiNameChar(f.charAt(p - 1))
+
+        // nameEnd(i): the end of the run of name units starting at i.
+        lazy val nameEnd: Array[Int] = {
+            val a = new Array[Int](n + 1)
+            a(n) = n
+            var i = n - 1
+            while (i >= 0) { a(i) = if (isNameUnit(f, i)) a(i + 1) else i; i -= 1 }
+            a
+        }
+        // closeFrom(i): for a double-quoted name whose text starts at i, the
+        // position of its closing quote (a doubled quote is one quote inside
+        // the name), or -1 when none follows.
+        lazy val closeFrom: Array[Int] = {
+            val a = new Array[Int](n + 1)
+            a(n) = -1
+            var runEnd = n // the end of the run of quotes the current one is in
+            var i = n - 1
+            while (i >= 0) {
+                if (f.charAt(i) != '"') a(i) = a(i + 1)
+                else {
+                    if (i + 1 >= n || f.charAt(i + 1) != '"') runEnd = i + 1
+                    // A run of r quotes inside a name: r / 2 doubled quotes,
+                    // and the last one closes the name when r is odd.
+                    a(i) = if ((runEnd - i) % 2 == 1) runEnd - 1 else a(runEnd)
+                }
+                i -= 1
+            }
+            a
+        }
+        lazy val called: Array[Boolean] = gapReaches(f, t => f.charAt(t) == '(')
+        def unquote(s: String): String = s.replace("\"\"", "\"")
+        // The name starting at p: unquoted, or the text of a double-quoted one.
+        def nameAt(p: Int): String =
+            if (at(p) == '"' && closeFrom(p + 1) >= 0) unquote(f.substring(p + 1, closeFrom(p + 1)))
+            else f.substring(p, nameEnd(p))
+
+        // SNOWFLAKE . CORTEX . : three tables, built back to front.
+        def cortex(): Option[String] = {
+            lazy val toLastDot = gapReaches(f, t => f.charAt(t) == '.')
+            val quotedSchema = "\"" + CORTEX_SCHEMA + "\""
+            def cortexPartEnd(t: Int): Int =
+                if (f.startsWith(CORTEX_SCHEMA, t)) t + CORTEX_SCHEMA.length
+                else if (f.startsWith(quotedSchema, t)) t + quotedSchema.length
+                else -1
+            val isCortexPart: Int => Boolean = t => { val e = cortexPartEnd(t); e >= 0 && toLastDot(e) }
+            lazy val toCortexPart = gapReaches(f, isCortexPart)
+            val isFirstDot: Int => Boolean = t => f.charAt(t) == '.' && toCortexPart(t + 1)
+            lazy val toFirstDot = gapReaches(f, isFirstDot)
+            val len = CORTEX_DATABASE.length
+            var p = f.indexOf(CORTEX_DATABASE)
+            while (p >= 0) {
+                if (nameBoundaryBefore(p)) {
+                    val e = p + len
+                    val start =
+                        if (toFirstDot(e)) e
+                        else if (at(p - 1) == '"' && at(e) == '"' && toFirstDot(e + 1)) e + 1
+                        else -1
+                    if (start >= 0) {
+                        val firstDot = walkToTarget(f, toFirstDot, isFirstDot, start)
+                        val part = walkToTarget(f, toCortexPart, isCortexPart, firstDot + 1)
+                        val lastDot = walkToTarget(f, toLastDot, (t: Int) => f.charAt(t) == '.', cortexPartEnd(part))
+                        val name = gapEnds(f)(lastDot + 1)
+                        return Some(CORTEX_DATABASE + "." + CORTEX_SCHEMA + "." + nameAt(name))
+                    }
+                }
+                p = f.indexOf(CORTEX_DATABASE, p + 1)
+            }
+            None
+        }
+
+        // AI_<name> as a call, unquoted or in double quotes.
+        def aiFunction(): Option[String] = {
+            val len = AI_FUNCTION_PREFIX.length
+            var p = f.indexOf(AI_FUNCTION_PREFIX)
+            while (p >= 0) {
+                if (nameBoundaryBefore(p)) {
+                    val e = nameEnd(p + len)
+                    if (e > p + len && called(if (at(e) == '"') e + 1 else e)) return Some(f.substring(p, e))
+                    if (at(p - 1) == '"') {
+                        val c = closeFrom(p)
+                        if (c > p + len && called(c + 1)) return Some(unquote(f.substring(p, c)))
+                    }
+                }
+                p = f.indexOf(AI_FUNCTION_PREFIX, p + 1)
+            }
+            None
+        }
+
+        // A listed name as a call, unquoted or in double quotes.
+        def serviceFunction(name: String): Option[String] = {
+            var p = f.indexOf(name)
+            while (p >= 0) {
+                val e = p + name.length
+                if (nameBoundaryBefore(p) && called(if (at(e) == '"') e + 1 else e)) return Some(name)
+                p = f.indexOf(name, p + 1)
+            }
+            None
+        }
+
+        // ! <gap> name <gap> ( : a method call on an object.
+        def method(): Option[String] = {
+            if (f.indexOf('!') < 0) return None
+            val isMethod: Int => Boolean = t => {
+                val c = f.charAt(t)
+                if (c == '"') { val q = closeFrom(t + 1); q >= 0 && called(q + 1) }
+                else !(c >= '0' && c <= '9') && isNameUnit(f, t) && called(nameEnd(t))
+            }
+            lazy val toMethod = gapReaches(f, isMethod)
+            var i = f.indexOf('!')
+            while (i >= 0) {
+                if (toMethod(i + 1)) return Some("!" + nameAt(walkToTarget(f, toMethod, isMethod, i + 1)))
+                i = f.indexOf('!', i + 1)
+            }
+            None
+        }
+
+        cortex()
+            .orElse(aiFunction())
+            .orElse(CALL_ONLY_SERVICE_FUNCTIONS.iterator.map(serviceFunction).collectFirst { case Some(x) => x })
+            .orElse(method())
+    }
 
     case class SnowflakeQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
 
