@@ -408,4 +408,12 @@ class SnowflakeQueryValidationSpec extends AnyFunSuite {
         }
         validate("SELECT identifier_col //x\ty\n FROM t")
     }
+
+    test("validation of a line comment holding many possible ends returns promptly") {
+        // every tab may end the comment, so each reading after it is taken; still one pass
+        val chained = warmedOutcome("an operator through a comment holding many tabs", "SELECT a -//" + ("\t>" * 400000))
+        assert(chained.contains(Chained), "operator through many tabs -> " + chained)
+        val call = warmedOutcome("IDENTIFIER before a comment holding many tabs", "SELECT IDENTIFIER //" + ("\tx" * 400000))
+        assert(call.isEmpty, "IDENTIFIER before many tabs -> " + call)
+    }
 }
