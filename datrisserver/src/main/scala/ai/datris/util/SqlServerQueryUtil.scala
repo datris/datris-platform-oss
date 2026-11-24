@@ -243,10 +243,13 @@ object SqlServerQueryUtil {
             throw new DatrisException("SQL comments are not allowed in queries")
 
         BLOCKED_KEYWORDS.foreach { keyword =>
-            // Not `\b` in front: T-SQL ends a number at its first letter, so a
-            // keyword glued to a digit is still the keyword.
-            val pattern = ("(?i)(?<![A-Za-z_@#$])" + keyword + "\\b").r
-            if (pattern.findFirstIn(normalized).isDefined)
+            // The front boundary is decided in code, not with `\b` (whose
+            // reading of non-ASCII letters differs across JDK versions): a hit
+            // counts unless the character before it continues a name. A
+            // keyword joined to the end of a number is not counted here; the
+            // scan in `singleStatementProblem` refuses a number joined to a word.
+            val pattern = ("(?i)" + keyword + "\\b").r
+            if (pattern.findAllMatchIn(normalized).exists(m => m.start == 0 || !continuesName(normalized.charAt(m.start - 1))))
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
 
@@ -425,6 +428,12 @@ object SqlServerQueryUtil {
     private def isHexDigit(c: Char): Boolean = c.isDigit || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 
     private def isWordChar(c: Char): Boolean = c.isLetterOrDigit || c == '_' || c == '@' || c == '#' || c == '$'
+
+    /** Whether `c`, directly in front of a [[BLOCKED_KEYWORDS]] hit, makes the
+      * hit part of a longer name: a letter, a decimal digit or `_`. Read one
+      * UTF-16 unit at a time, so a surrogate half (a letter outside the Basic
+      * Multilingual Plane) does not continue a name and the hit is refused. */
+    private def continuesName(c: Char): Boolean = Character.isLetterOrDigit(c) || c == '_'
 
     /** Cap the rows `sql` returns.
      *
