@@ -87,7 +87,7 @@ POST /api/v1/query/mongodb
 | `database` | string | No | configured MongoDB database | MongoDB database name to query. |
 | `filter` | object | No | `{}` | MongoDB query filter |
 | `projection` | object | No | all fields | Fields to include/exclude |
-| `limit` | integer | No | 20 | Maximum documents to return. Pass `-1` for unlimited (tap scripts use this to read every document). Omit for the preview default of 20; any positive value is honored with no cap. |
+| `limit` | integer | No | 20 | Maximum documents to return. Pass `-1` for unlimited (tap scripts use this to read every document); the query then runs under a 5-minute time limit instead of 30 seconds. Omit for the preview default of 20; any positive value is honored with no cap on the count. The result-size ceiling below applies to every limit. |
 
 ### Example
 
@@ -120,10 +120,12 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 - **Data collections only** — queries read data collections only: never MongoDB's own system databases, `system.` collections, or the collections in which the platform keeps its own state. Any of these returns `400` with `{"error": "This database or collection is not available for queries."}`.
 - **Blocked operators** — a filter or a projection containing `$where`, `$function`, or `$accumulator`, at any depth (nested documents and arrays included), is rejected, as these allow arbitrary JavaScript execution
 - **Projection** — plain inclusion and exclusion (`1`, `0`, `true`, `false`), `$slice`, `$elemMatch`, `$meta` and aggregation expressions other than the blocked operators are accepted
-- **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this), so pass a positive `limit` for previews
+- **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this) within the time limit and the result-size ceiling, so pass a positive `limit` for previews
+- **Time limit** — a query is stopped on the MongoDB server after 30 seconds, or after 5 minutes when `limit` is `-1`; a stopped query returns `400` with `{"error": "The query did not finish within its time limit of 30 seconds; narrow the filter or page the read with a positive limit."}` (300 seconds for `-1`) and no documents
+- **Result-size ceiling** — a result larger than 256 MB of JSON text (counted in characters as the documents are serialised, 1 MB = 1024 × 1024) is refused with `400` and `{"error": "The result is larger than 256 MB; page the read with a filter and a positive limit."}`, never cut short. The server stops reading as soon as the ceiling is passed. It applies to positive limits as well as `-1`. Set `DATRIS_QUERY_MAX_RESULT_MB` to change it, `0` for none (see [Configuration](/configuration-reference#container-environment-variables))
 - **Standard MongoDB query operators** (`$eq`, `$gt`, `$in`, `$regex`, etc.) are safe and fully supported
 
-A filter or projection holding a blocked operator returns `500 Internal Server Error` with `{"error": "..."}` naming it, for example `MongoDB filter contains blocked operator: $where`; an empty collection name returns `500` too. A system or platform collection returns `400`, as above.
+A filter or projection holding a blocked operator returns `500 Internal Server Error` with `{"error": "..."}` naming it, for example `MongoDB filter contains blocked operator: $where`; an empty collection name returns `500` too. A system or platform collection, a query past its time limit and a result past the size ceiling return `400`, as above.
 
 ---
 

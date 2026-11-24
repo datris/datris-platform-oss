@@ -2839,14 +2839,14 @@ def _base_tools():
         ),
         Tool(
             name="query_mongodb",
-            description="Query a MongoDB collection with optional filter and projection. Use list_mongodb_databases and list_mongodb_collections first to discover available data. Returns matching documents as JSON.",
+            description="Query a MongoDB collection with optional filter and projection. Use list_mongodb_databases and list_mongodb_collections first to discover available data. Returns matching documents as JSON. Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a query past it is stopped and returns an error and no documents. A result larger than the server's size ceiling (256 MB of JSON text by default) is refused with an error, never cut short, whatever the limit. To read a large collection, page it: a filter (for example on _id or a timestamp range) and a positive limit per call.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "collection": {"type": "string", "description": "MongoDB collection name"},
                     "filter": {"type": "object", "description": "MongoDB query filter (default: {})"},
                     "projection": {"type": "object", "description": "Fields to include/exclude (default: all fields)"},
-                    "limit": {"type": "integer", "description": "Maximum documents to return (default: 20). Pass -1 for unlimited — no cap, returns every matching document."},
+                    "limit": {"type": "integer", "description": "Maximum documents to return (default: 20). Pass -1 for every matching document (no document-count cap); the query then runs under a 300-second time limit instead of 30 seconds, and the result-size ceiling still applies: a result past it is refused, so page the read with a filter and a positive limit."},
                 },
                 "required": ["collection"]
             }

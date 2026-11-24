@@ -6,18 +6,88 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
+import com.mongodb.{MongoExecutionTimeoutException, MongoSocketReadTimeoutException}
 import com.mongodb.client.MongoClient
 import org.bson.Document
 import org.bson.json.{JsonMode, JsonWriterSettings}
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.util.concurrent.TimeUnit
 import scala.collection.JavaConverters._
+import scala.util.Try
 
 object MongoDBQueryUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
-    // No MAX cap: callers (tap scripts) may need the full collection. Callers that
-    // want a preview-sized result pass an explicit positive limit.
+    // No document-count cap: callers (tap scripts) may need the full collection.
+    // Callers that want a preview-sized result pass an explicit positive limit.
+    // Every query still has a time limit ([[timeoutSeconds]]) and a result-size
+    // ceiling ([[maxResultBytes]]).
     private val DEFAULT_LIMIT = 20
+
+    /** Time limit (seconds) for a bounded query (`limit >= 0`). The same value
+      * as [[PostgresQueryUtil.QUERY_TIMEOUT_SECONDS]]. */
+    private[util] val QUERY_TIMEOUT_SECONDS = 30
+
+    /** Time limit (seconds) for an unlimited read (`limit < 0`). The same
+      * value as [[PostgresQueryUtil.UNLIMITED_QUERY_TIMEOUT_SECONDS]]. */
+    private[util] val UNLIMITED_QUERY_TIMEOUT_SECONDS = 300
+
+    /** Added to a query's time limit to give the client's socket read
+      * timeout, so the server-side `maxTime` normally fires first and a dead
+      * socket still returns. */
+    private[util] val SOCKET_READ_MARGIN_SECONDS = 5
+
+    /** The time limit a query runs under: [[QUERY_TIMEOUT_SECONDS]] for a
+      * bounded query, [[UNLIMITED_QUERY_TIMEOUT_SECONDS]] for `limit < 0`. */
+    private[util] def timeoutSeconds(limit: Int): Int =
+        if (limit < 0) UNLIMITED_QUERY_TIMEOUT_SECONDS else QUERY_TIMEOUT_SECONDS
+
+    private val BytesPerMb: Long = 1024L * 1024L
+
+    /** Default result-size ceiling, in MB (1024 x 1024) of JSON text. */
+    private[util] val DEFAULT_MAX_RESULT_MB = 256L
+
+    /** The result-size ceiling in MB: `DATRIS_QUERY_MAX_RESULT_MB` (or the
+      * `datris.queryMaxResultMb` system property), default
+      * [[DEFAULT_MAX_RESULT_MB]], `0` = no ceiling. A blank, non-numeric or
+      * negative value falls back to the default with one warning. */
+    private def configuredMaxResultMb(): Long =
+        sys.props.get("datris.queryMaxResultMb").orElse(sys.env.get("DATRIS_QUERY_MAX_RESULT_MB")) match {
+            case None => DEFAULT_MAX_RESULT_MB
+            case Some(raw) =>
+                Try(raw.trim.toLong).toOption.filter(_ >= 0) match {
+                    case Some(mb) => mb
+                    case None =>
+                        logger.warn(
+                            "DATRIS_QUERY_MAX_RESULT_MB is not a whole number of MB >= 0; using the default of " +
+                                DEFAULT_MAX_RESULT_MB + " MB"
+                        )
+                        DEFAULT_MAX_RESULT_MB
+                }
+        }
+
+    /** The most JSON text (characters of the serialised documents; one byte
+      * each for ASCII) a query may return, read once at load. `0` = no
+      * ceiling. A `var` so a spec can set it. */
+    @volatile private[datris] var maxResultBytes: Long = configuredMaxResultMb().min(Long.MaxValue / BytesPerMb) * BytesPerMb
+
+    /** A query that did not finish within its time limit (the server's
+      * `maxTime` or the client's socket read timeout). */
+    final class QueryTimeLimitException(seconds: Int)
+        extends DatrisException(
+            "The query did not finish within its time limit of " + seconds +
+                " seconds; narrow the filter or page the read with a positive limit."
+        )
+
+    /** A result larger than [[maxResultBytes]]. */
+    final class ResultTooLargeException(ceilingBytes: Long)
+        extends DatrisException(
+            "The result is larger than " + formatMb(ceilingBytes) + " MB; page the read with a filter and a positive limit."
+        )
+
+    private def formatMb(bytes: Long): String =
+        if (bytes % BytesPerMb == 0) (bytes / BytesPerMb).toString
+        else BigDecimal(bytes.toDouble / BytesPerMb).setScale(2, BigDecimal.RoundingMode.HALF_UP).bigDecimal.stripTrailingZeros.toPlainString
     private val jsonSettings = JsonWriterSettings.builder().outputMode(JsonMode.RELAXED).build()
 
     // Operators that allow arbitrary JavaScript execution
@@ -84,7 +154,8 @@ object MongoDBQueryUtil {
 
         logger.info("Querying MongoDB collection: " + collection + " with limit: " + limitApplied.map(_.toString).getOrElse("unlimited"))
 
-        val client = newClient()
+        val seconds = timeoutSeconds(limit)
+        val client = newClient(seconds)
 
         try {
             val db = client.getDatabase(dbName)
@@ -102,26 +173,67 @@ object MongoDBQueryUtil {
 
             limitApplied.foreach(l => cursor = cursor.limit(l))
 
-            val results = cursor
-                .asScala
-                .map(doc => doc.toJson(jsonSettings))
-                .toList
+            // The server stops the operation once the time limit passes.
+            cursor = cursor.maxTime(seconds.toLong, TimeUnit.SECONDS)
+
+            val results = readWithin(cursor, maxResultBytes, seconds)
 
             logger.info("Query returned " + results.size + " documents")
-            results.asJava
+            results
         } finally {
             client.close()
         }
     }
 
-    /** One client per query, closed by [[query]]. */
-    private def newClient(): MongoClient = {
+    /** Reads `find` to the end, serialising each document once and adding up
+      * its JSON text length. Past `ceilingBytes` (when > 0) it stops reading,
+      * closes the cursor and throws [[ResultTooLargeException]]. A time-limit
+      * failure from the driver becomes [[QueryTimeLimitException]] (no host or
+      * port in its message). */
+    private def readWithin(
+        find: com.mongodb.client.FindIterable[Document],
+        ceilingBytes: Long,
+        seconds: Int
+    ): java.util.List[String] = {
+        val results = new java.util.ArrayList[String]()
+        var total = 0L
+        try {
+            val it = find.iterator()
+            try {
+                while (it.hasNext) {
+                    val json = it.next().toJson(jsonSettings)
+                    total += json.length
+                    if (ceilingBytes > 0 && total > ceilingBytes) {
+                        logger.warn(
+                            "MongoDB query result passed the ceiling of " + ceilingBytes + " characters after " +
+                                (results.size + 1) + " documents; refused"
+                        )
+                        throw new ResultTooLargeException(ceilingBytes)
+                    }
+                    results.add(json)
+                }
+            } finally {
+                it.close()
+            }
+        } catch {
+            case _: MongoExecutionTimeoutException | _: MongoSocketReadTimeoutException =>
+                logger.warn("MongoDB query did not finish within " + seconds + " s")
+                throw new QueryTimeLimitException(seconds)
+        }
+        results
+    }
+
+    /** One client per query, closed by [[query]]. Its socket read timeout is
+      * the query's time limit plus [[SOCKET_READ_MARGIN_SECONDS]], so an
+      * unlimited read gets the longer one. The test seam ignores the limit. */
+    private def newClient(timeLimitSeconds: Int): MongoClient = {
         val factory = clientFactoryOverride
         if (factory != null) factory()
         else {
             val secrets = SecretsRetrieverUtil.mongoDbSecrets()
             val settings = com.mongodb.MongoClientSettings.builder()
                 .applyConnectionString(new com.mongodb.ConnectionString(secrets.connectionString))
+                .applyToSocketSettings(b => b.readTimeout(timeLimitSeconds + SOCKET_READ_MARGIN_SECONDS, TimeUnit.SECONDS))
                 .build()
             com.mongodb.client.MongoClients.create(settings)
         }
