@@ -106,7 +106,10 @@ object DatabricksQueryUtil {
       * can see (no values; Databricks SQL, preview). Left accepted:
       * event_log (callable only by the owner of the table, names a table or
       * pipeline), table_changes (a named table under SELECT), range, explode
-      * and the other generators. Reads of a file location in place of a
+      * and the other generators. table_changes_by_path reads a table's
+      * change feed from a path (open-source Delta); whether a SQL warehouse
+      * offers it is UNCONFIRMED (2026-11-24), refused in case it does. Reads
+      * of a file location in place of a
       * table are refused by [[pathRead]], not here. */
     private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
         "http_request",
@@ -127,7 +130,8 @@ object DatabricksQueryUtil {
         "read_statestore",
         "read_state_metadata",
         "cloud_files_state",
-        "list_secrets"
+        "list_secrets",
+        "table_changes_by_path"
     )
 
     // [[firstCall]] tries an entry only at a backtick or at the entry's
@@ -202,7 +206,7 @@ object DatabricksQueryUtil {
     }
 
     /** The format words a table name may start with to read files by path
-      * (`json.`/p``), compared in ASCII lower case. */
+      * (`json.`/p``), compared after [[foldCase]]. */
     private val PathFormatWords: Set[String] =
         Set("json", "csv", "avro", "parquet", "orc", "binaryfile", "text", "delta", "xml")
     private val LongestPathFormatWord = PathFormatWords.map(_.length).max
@@ -219,8 +223,8 @@ object DatabricksQueryUtil {
     /** Whether `sql` names a file location in place of a table: a two-part
       * name whose first part is not preceded by `.` (gap characters between
       * allowed) and whose second part is quoted, where either the first part
-      * is a format word ([[PathFormatWords]], bare or quoted, any ASCII letter
-      * case) and the second part holds `/` or `:`, or the second part starts
+      * is a format word ([[PathFormatWords]], bare or quoted, any letter case,
+      * folded as [[foldCase]] does) and the second part holds `/` or `:`, or the second part starts
       * with `/` or holds `:/` whatever the first part. Gap characters
       * ([[gapCodePoint]]) may stand on both sides of the dot. A further
       * `.part` after the second part does not matter: the name is refused
@@ -256,7 +260,11 @@ object DatabricksQueryUtil {
     private[util] def pathRead(sql: String): Boolean =
         sql != null && (pathReadScan(sql, literals = true) || pathReadScan(sql, literals = false))
 
-    private def asciiLower(c: Char): Char = if (c >= 'A' && c <= 'Z') (c + 32).toChar else c
+    /** One character folded as `String.equalsIgnoreCase` folds it (upper
+      * case, then lower case), the comparison Spark uses to look up a data
+      * source by its short name: U+017F folds to `s`, U+0131 and U+0130 to
+      * `i`, U+212A to `k`. Constant time per character. */
+    private def foldCase(c: Char): Char = Character.toLowerCase(Character.toUpperCase(c))
 
     /** One pass of [[pathRead]]; `literals` chooses whether quote characters
       * open string literals. Keeps only the kinds of the last three tokens
@@ -304,7 +312,7 @@ object DatabricksQueryUtil {
                 } else {
                     if (c == '/') { qSlash = true; if (first) qStartsSlash = true; if (prev == ':') qColonSlash = true }
                     if (c == ':') qColon = true
-                    if (wordFits) { if (word.length < LongestPathFormatWord) word.append(asciiLower(c)) else wordFits = false }
+                    if (wordFits) { if (word.length < LongestPathFormatWord) word.append(foldCase(c)) else wordFits = false }
                     prev = c; first = false; i += 1
                 }
             }
@@ -360,7 +368,7 @@ object DatabricksQueryUtil {
                     if (fmt) {
                         val sb = new java.lang.StringBuilder(len)
                         var i = start
-                        while (i < end) { sb.append(asciiLower(sql.charAt(i))); i += 1 }
+                        while (i < end) { sb.append(foldCase(sql.charAt(i))); i += 1 }
                         fmt = PathFormatWords.contains(sb.toString)
                     }
                     p = end

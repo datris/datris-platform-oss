@@ -43,9 +43,11 @@ class DatabricksPathReadRulingsSpec extends AnyFunSuite {
         assert(pathRead("SELECT * FROM BinaryFile.`dir/f`"))
         assert(!pathRead("SELECT * FROM JSON.`my table`"))
         assert(!pathRead(null))
-        // a non-ASCII letter that only looks like (or folds to) an ASCII one makes another name
-        assert(!pathRead("SELECT * FROM j\u017Fon.`a/b`"))
-        accepted("SELECT * FROM j\u017Fon.`a/b`", "SELECT * FROM \u0441sv.`a/b`")
+        // a letter that String.equalsIgnoreCase folds to an ASCII one is that letter
+        assert(pathRead("SELECT * FROM j\u017Fon.`a/b`"))
+        refused("SELECT * FROM j\u017Fon.`a/b`")
+        // a look-alike that does not fold to an ASCII letter makes another name
+        accepted("SELECT * FROM \u0441sv.`a/b`")
     }
 
     test("a further part after the path does not make it a table name") {
@@ -106,6 +108,31 @@ class DatabricksPathReadRulingsSpec extends AnyFunSuite {
             "SELECT * FROM json.\"\\u002Fp\""
         )
         accepted("SELECT * FROM t WHERE a = \"x/y\"", "SELECT * FROM t WHERE a = \"json\" AND b = \"a/b\"")
+    }
+
+    test("a format word spelled with letters that fold to ASCII ones, as Spark compares data source names, is refused") {
+        refused(
+            "SELECT * FROM `j\u017Fon`.`dir/f`",
+            "SELECT * FROM `c\u017Fv`.`dir/f.csv`",
+            "SELECT * FROM `b\u0131naryfile`.`dir/f`",
+            "SELECT * FROM `b\u0130naryfile`.`dir/f`",
+            "SELECT * FROM b\u0130naryfile.`dir/f`",
+            "SELECT * FROM `PARQUET`.`a:b`"
+        )
+        accepted("SELECT * FROM `j\u017Fon`.`my table`", "SELECT * FROM `\u0441sv`.`dir/f`")
+    }
+
+    test("table_changes_by_path is refused as a call in any letter case; table_changes still reads") {
+        Seq(
+            "SELECT * FROM table_changes_by_path('s3://b/p', 0)",
+            "SELECT * FROM TABLE_CHANGES_BY_PATH('/p', 0)",
+            "SELECT * FROM Table_Changes_By_Path\u00A0('/p', 0)",
+            "SELECT * FROM `table_changes_by_path`('/p', 0)"
+        ).foreach { s =>
+            assert(outcomeOf(s).contains("Query contains blocked function: table_changes_by_path"), visible(s) + " -> " + outcomeOf(s))
+        }
+        assert(QuerySafetyReflect.stringList(DatabricksQueryUtil, "BLOCKED_FUNCTIONS").contains("table_changes_by_path"))
+        accepted("SELECT * FROM table_changes('main.default.t', 2)", "SELECT table_changes_by_path_count FROM t")
     }
 
     test("the path check stays fast on quote-heavy input") {
