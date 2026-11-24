@@ -223,6 +223,7 @@ object SqlServerQueryUtil {
         "SELECT * FROM " + SqlServerConnectionUtil.qualifiedTable(db)
 
     private[util] def validateQuery(sql: String): Unit = {
+        QueryTextLimit.check(sql)
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 

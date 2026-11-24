@@ -119,24 +119,38 @@ object DatabricksQueryUtil {
     // Between a called name and its `(`: whitespace taken widely (ASCII,
     // Unicode separators, control and format characters; the Spark lexer
     // hides Unicode space separators too). Wider than the store errs toward
-    // seeing a call. The boundary in front stays ASCII, so a non-ASCII
-    // neighbour counts as a boundary, which also errs toward refusing.
+    // seeing a call. Possessive, and only name characters come before it, so
+    // a run of gap characters is read from one match start at most.
     private val GapBeforeParen = "[\\s\\p{Z}\\p{Cc}\\p{Cf}]*+"
 
+    // In front of a called name: no letter, digit or `_`, ASCII or not, the
+    // same class the `ai_` entry reads a name with. So inside one long name
+    // only its first character can start a match, and the name is read once.
+    // Spark takes only ASCII letters, digits and `_` into an unquoted name, so
+    // a listed name directly after a non-ASCII letter or digit is not a call
+    // to it (in backticks it still is: the backtick is the boundary). The
+    // second branch never matches; it widens the lookbehind to two UTF-16
+    // units, so the class is also tried at the first unit of a letter
+    // outside the Basic Multilingual Plane, where it reads the whole letter
+    // (one unit back reads only its second half, which is not a letter).
+    private val NameBoundary = "(?<![\\p{L}\\p{N}_]|(?!)..)"
+
     private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] =
-        BLOCKED_FUNCTIONS.map(fn => ("(?i)(?<!\\w)`?(" + fn + ")`?" + GapBeforeParen + "\\(").r)
+        BLOCKED_FUNCTIONS.map(fn => ("(?i)" + NameBoundary + "`?(" + fn + ")`?" + GapBeforeParen + "\\(").r)
 
     /** The first [[BLOCKED_FUNCTIONS]] name `sql` calls, in lower case
       * (`IDENTIFIER` in upper case). The text is lower-cased with Unicode
       * rules first, as function lookup folds names, so a letter that only
       * those rules fold to an ASCII one (the Kelvin sign) does not hide a
       * name; `(?i)` alone folds ASCII only. */
-    private[util] def blockedFunction(sql: String): Option[String] =
+    private[util] def blockedFunction(sql: String): Option[String] = {
+        val lower = sql.toLowerCase(java.util.Locale.ROOT)
         BlockedFunctionPatterns.view
-            .flatMap(_.findFirstMatchIn(sql.toLowerCase(java.util.Locale.ROOT)))
+            .flatMap(_.findFirstMatchIn(lower))
             .headOption
             .map(_.group(1))
             .map(name => if (name.equalsIgnoreCase("identifier")) "IDENTIFIER" else name)
+    }
 
     case class DatabricksQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
 
@@ -208,6 +222,7 @@ object DatabricksQueryUtil {
     }
 
     private[util] def validateQuery(sql: String): Unit = {
+        QueryTextLimit.check(sql)
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 
@@ -230,7 +245,10 @@ object DatabricksQueryUtil {
             throw new DatrisException("SQL comments are not allowed in queries")
 
         BLOCKED_KEYWORDS.foreach { keyword =>
-            val pattern = ("(?i)\\b" + keyword + "\\b").r
+            // PostgresQueryUtil.WordStart: `\b` in front, tried only where a
+            // word character follows, so its reading back over combining
+            // marks happens at most once per run of them.
+            val pattern = ("(?i)" + PostgresQueryUtil.WordStart + keyword + "\\b").r
             if (pattern.findFirstIn(normalized).isDefined)
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }

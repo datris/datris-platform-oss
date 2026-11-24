@@ -288,7 +288,27 @@ object PostgresQueryUtil {
             catch { case e: Exception => logger.warn("Could not evict a query connection: " + e.getMessage) }
     }
 
+    /** The front boundary of every word and function pattern here: `\b`,
+      * tried only where an ASCII word character follows. Same matches as
+      * `\b` alone in front of a name that starts with a letter, but `\b` reads
+      * past a run of combining marks before the position it is tried at
+      * (Java 17), so tried at every position it would read such a run once
+      * per position. Guarded, it is tried right after a run at most once. */
+    private[util] val WordStart = "(?=\\w)\\b"
+
+    /** The patterns [[validateQuery]] refuses [[BLOCKED_FUNCTIONS]] with.
+      * Each ends with `(?!\w)`, not `\b`: it holds after every greedy `\w`
+      * run, so a pattern ending in one never retries shorter runs, and a
+      * listed name with a non-ASCII letter directly after it is refused (that
+      * is a different name to PostgreSQL, which then reports it unknown). */
+    private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] =
+        BLOCKED_FUNCTIONS.map(fn => ("(?i)" + WordStart + fn + "(?!\\w)").r)
+
+    private lazy val BlockedKeywordPatterns: Seq[(String, scala.util.matching.Regex)] =
+        BLOCKED_KEYWORDS.toSeq.map(keyword => keyword -> ("(?i)" + WordStart + keyword + "\\b").r)
+
     private[util] def validateQuery(sql: String): Unit = {
+        QueryTextLimit.check(sql)
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 
@@ -308,18 +328,17 @@ object PostgresQueryUtil {
             throw new DatrisException("SQL comments are not allowed in queries")
 
         // Check for blocked keywords as whole words
-        val upperSql = normalized.toUpperCase
-        BLOCKED_KEYWORDS.foreach { keyword =>
-            val pattern = ("(?i)\\b" + keyword + "\\b").r
-            if (pattern.findFirstIn(normalized).isDefined)
-                throw new DatrisException("Query contains blocked keyword: " + keyword)
+        BlockedKeywordPatterns.foreach {
+            case (keyword, pattern) =>
+                if (pattern.findFirstIn(normalized).isDefined)
+                    throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
 
         if (UnicodeEscapeQuote.findFirstIn(normalized).isDefined)
             throw new DatrisException("Unicode escape quoting (U&) is not allowed in queries")
 
-        BLOCKED_FUNCTIONS.foreach { fn =>
-            ("(?i)\\b" + fn + "\\b").r.findFirstIn(normalized).foreach { found =>
+        BlockedFunctionPatterns.foreach { pattern =>
+            pattern.findFirstIn(normalized).foreach { found =>
                 throw new DatrisException("Query contains blocked function: " + found)
             }
         }

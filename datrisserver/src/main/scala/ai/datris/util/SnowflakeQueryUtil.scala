@@ -105,35 +105,95 @@ object SnowflakeQueryUtil {
         "SYSTEM$CLUSTERING_DEPTH"
     )
 
-    // Between a called name and its `(`: whitespace and `//` line comments, in
-    // any mix. Whitespace is taken widely (ASCII, Unicode separators, control
-    // and format characters) and a comment ends at the first control
-    // character or line or paragraph separator: where this differs from the
-    // store, it errs toward seeing a call. Possessive, so a line of repeated
-    // `//` cannot make the match backtrack, and a `(` inside a comment is not
-    // taken for the call's.
-    private val GapBeforeParen = "(?:[\\s\\p{Z}\\p{Cc}\\p{Cf}]|//[^\\p{Cc}\\p{Zl}\\p{Zp}]*+)*+"
+    /** For every position `i` of `text` (and `text.length`), where the gap
+      * starting at `i` ends: the gap a called name and its `(` may have
+      * between them, so a name is called when the character at the end of the
+      * gap after it is `(`. The gap is whitespace and `//` line comments, in
+      * any mix. Whitespace is taken widely (ASCII, Unicode separators, control
+      * and format characters) and a comment ends at the first control
+      * character or line or paragraph separator: where this differs from the
+      * store, it errs toward seeing a call. A `(` inside a comment is not the
+      * call's. Read by code point, so a character outside the Basic
+      * Multilingual Plane counts as what it is. One backward pass, so the
+      * whole table takes time in proportion to the text's length however many
+      * names it holds and however many lines a gap runs over. */
+    private[util] def gapEnds(text: String): Array[Int] = {
+        val n = text.length
+        val ends = new Array[Int](n + 1)
+        // commentStop(i): the first position at or after i where a `//`
+        // comment running through i stops.
+        val commentStop = new Array[Int](n + 1)
+        ends(n) = n
+        commentStop(n) = n
+        var i = n - 1
+        while (i >= 0) {
+            val cp = text.codePointAt(i)
+            val next = math.min(n, i + Character.charCount(cp))
+            commentStop(i) = if (endsComment(cp)) i else commentStop(next)
+            ends(i) =
+                if (isGapCharacter(cp)) ends(next)
+                else if (cp == '/' && i + 1 < n && text.charAt(i + 1) == '/') ends(commentStop(i + 2))
+                else i
+            i -= 1
+        }
+        ends
+    }
+
+    /** Whitespace in a gap: ASCII whitespace, Unicode separators, control and
+      * format characters. */
+    private def isGapCharacter(cp: Int): Boolean = Character.getType(cp) match {
+        case Character.SPACE_SEPARATOR | Character.LINE_SEPARATOR | Character.PARAGRAPH_SEPARATOR | Character.CONTROL |
+            Character.FORMAT =>
+            true
+        case _ => false
+    }
+
+    /** What ends a `//` comment: a control character, a line or paragraph separator. */
+    private def endsComment(cp: Int): Boolean = Character.getType(cp) match {
+        case Character.CONTROL | Character.LINE_SEPARATOR | Character.PARAGRAPH_SEPARATOR => true
+        case _ => false
+    }
 
     // BLOCKED_FUNCTIONS entries refused only as calls rather than as whole words.
     private val CallOnlyFunctions = Set("IDENTIFIER")
 
-    private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] = BLOCKED_FUNCTIONS.map { fn =>
+    /** Each [[BLOCKED_FUNCTIONS]] entry with its pattern. For a
+      * [[CallOnlyFunctions]] entry the pattern finds the name (optionally in
+      * double quotes) and [[gapEnds]] decides whether it is called. */
+    private lazy val BlockedFunctionPatterns: Seq[(Boolean, scala.util.matching.Regex)] = BLOCKED_FUNCTIONS.map { fn =>
         // The SYSTEM$ entry takes Unicode letters and digits into the name,
         // so an allowlisted name with more after it is not the allowlisted
         // one. The boundaries stay ASCII: a non-ASCII neighbour then counts
-        // as a boundary, which errs toward refusing.
+        // as a boundary, which errs toward refusing. Each match runs to the
+        // end of its name and the search goes on after it, so a long name is
+        // read once.
         val tail = if (fn.startsWith("SYSTEM")) "(?![\\p{L}\\p{N}_$])" else "(?![\\w$])"
-        if (CallOnlyFunctions.contains(fn)) ("(?i)(?<![\\w$])\"?(" + fn + ")\"?" + GapBeforeParen + "\\(").r
-        else ("(?i)(?<![\\w$])(" + fn + ")" + tail).r
+        if (CallOnlyFunctions.contains(fn)) (true, ("(?i)(?<![\\w$])\"?(" + fn + ")\"?").r)
+        else (false, ("(?i)(?<![\\w$])(" + fn + ")" + tail).r)
+    }
+
+    /** The [[BLOCKED_FUNCTIONS]] names `text` uses, in order, in upper case.
+      * [[gapEnds]] is built at most once, and only when a call-only name is
+      * found. */
+    private def functionsUsed(text: String): Iterator[String] = {
+        lazy val ends = gapEnds(text)
+        BlockedFunctionPatterns.iterator.flatMap {
+            case (callOnly, pattern) =>
+                pattern
+                    .findAllMatchIn(text)
+                    .filter(m => !callOnly || { val e = ends(m.end); e < text.length && text.charAt(e) == '(' })
+                    .map(_.group(1).toUpperCase(java.util.Locale.ROOT))
+        }
     }
 
     /** The first [[BLOCKED_FUNCTIONS]] name `sql` uses, in upper case. The
       * text is searched as written and upper-cased with Unicode rules, so a
       * letter that only those rules fold to an ASCII one (a long s, a dotless
-      * i) does not hide a name; `(?i)` alone folds ASCII only. */
+      * i) does not hide a name; `(?i)` alone folds ASCII only. The two texts'
+      * lengths can differ, so each has its own [[gapEnds]]. */
     private[util] def blockedFunction(sql: String): Option[String] =
         Iterator(sql, sql.toUpperCase(java.util.Locale.ROOT))
-            .flatMap(text => BlockedFunctionPatterns.iterator.flatMap(_.findAllMatchIn(text).map(_.group(1).toUpperCase(java.util.Locale.ROOT))))
+            .flatMap(functionsUsed)
             .find(name => !SYSTEM_FUNCTION_ALLOWLIST.contains(name))
 
     case class SnowflakeQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
@@ -206,6 +266,7 @@ object SnowflakeQueryUtil {
     }
 
     private[util] def validateQuery(sql: String): Unit = {
+        QueryTextLimit.check(sql)
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 
@@ -231,7 +292,10 @@ object SnowflakeQueryUtil {
             throw new DatrisException("SQL comments are not allowed in queries")
 
         BLOCKED_KEYWORDS.foreach { keyword =>
-            val pattern = ("(?i)\\b" + keyword + "\\b").r
+            // PostgresQueryUtil.WordStart: `\b` in front, tried only where a
+            // word character follows, so its reading back over combining
+            // marks happens at most once per run of them.
+            val pattern = ("(?i)" + PostgresQueryUtil.WordStart + keyword + "\\b").r
             if (pattern.findFirstIn(normalized).isDefined)
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }

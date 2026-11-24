@@ -3941,7 +3941,8 @@ paths:
               properties:
                 sql:
                   type: string
-                  description: SQL SELECT query to execute
+                  maxLength: 1000000
+                  description: "SQL SELECT query to execute. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                   example: "SELECT * FROM test.stock_price WHERE volume > 1000000"
                 database:
                   type: string
@@ -4083,7 +4084,8 @@ paths:
                   description: Name of a pipeline with a Snowflake destination
                 sql:
                   type: string
-                  description: SQL query to execute. Omit to select everything from the pipeline's destination table.
+                  maxLength: 1000000
+                  description: "SQL query to execute. Omit to select everything from the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                 limit:
                   type: integer
                   default: 100
@@ -4140,7 +4142,8 @@ paths:
                   description: Name of a pipeline with a SQL Server destination
                 sql:
                   type: string
-                  description: Read-only T-SQL to execute (SELECT or WITH, no semicolons or comments). Omit to preview the pipeline's destination table.
+                  maxLength: 1000000
+                  description: "Read-only T-SQL to execute (SELECT or WITH, no semicolons or comments). Omit to preview the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                 limit:
                   type: integer
                   default: 100
@@ -4199,7 +4202,8 @@ paths:
                   description: Name of a pipeline with a Databricks destination
                 sql:
                   type: string
-                  description: SQL query to execute. Omit to select everything from the pipeline's destination table.
+                  maxLength: 1000000
+                  description: "SQL query to execute. Omit to select everything from the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                 limit:
                   type: integer
                   default: 100
