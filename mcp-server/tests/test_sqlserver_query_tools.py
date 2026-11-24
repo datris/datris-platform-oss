@@ -102,3 +102,17 @@ def test_get_dest_types_description_names_sqlserver():
 
 def test_apply_dest_types_description_names_sqlserver():
     assert _names_sqlserver(_tool("apply_dest_types").description)
+
+
+# ------------------------------------------- brace escapes (story: brace -----
+# escapes are refused, plans/stories/sqlserver-odbc-call-escape-refused.md)
+
+def test_query_sqlserver_description_says_brace_escapes_are_refused():
+    desc = _tool("query_sqlserver").description
+    sentences = [s for s in desc.replace("\n", " ").split(". ") if "brace" in s.lower()]
+    assert sentences, "query_sqlserver description does not mention brace escapes"
+    sentence = sentences[0].lower()
+    assert "brace escape" in sentence and "refused" in sentence, sentence
+    # the plain rewrites: the date as a string, the T-SQL function
+    assert "date" in sentence and "string" in sentence, sentence
+    assert "t-sql function" in sentence, sentence

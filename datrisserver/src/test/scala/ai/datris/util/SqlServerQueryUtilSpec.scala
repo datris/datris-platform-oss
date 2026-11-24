@@ -687,4 +687,159 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
             intercept[DatrisException](SqlServerQueryUtil.validateQuery(sql))
         }
     }
+
+    // =====================================================================
+    // Story: SQL Server query: brace escapes are refused
+    // (plans/stories/sqlserver-odbc-call-escape-refused.md). Decision 1 as
+    // ruled: every `{` outside string literals and quoted identifiers is
+    // refused by the scan, with the Decision 2 text (BraceRule). Every case
+    // above this line is unedited.
+    // =====================================================================
+
+    private val BraceRule =
+        "Curly braces are not allowed in queries outside string literals; " +
+            "write dates as '2024-01-31' and use T-SQL function names instead of {d ...} and {fn ...}"
+
+    private val AllowlistMessage =
+        "Only read-only statements are allowed: SELECT (WITH/CTE); for metadata, SELECT from INFORMATION_SCHEMA views"
+
+    private def braceRefused(sql: String): Unit = {
+        val msg = refusal(sql)
+        assert(msg == BraceRule, sql + " -> " + msg)
+        val p = problem(sql)
+        assert(p.isDefined, sql)
+        assert(p.contains(BraceRule), sql + " -> " + p)
+    }
+
+    /** One query per brace form; `%s` is where the form's word goes. */
+    private val BraceForms: Seq[(String, String)] = Seq(
+        "call" -> "SELECT 1 AS a {%s p(1)}",
+        "call" -> "SELECT 1 AS a {? = %s dbo.p(1)}",
+        "fn" -> "SELECT {%s UCASE(name)} FROM t",
+        "d" -> "SELECT a FROM t WHERE d >= {%s '2024-01-31'}",
+        "t" -> "SELECT a FROM t WHERE c >= {%s '10:00:00'}",
+        "ts" -> "SELECT a FROM t WHERE c >= {%s '2024-01-31 10:00:00'}",
+        "oj" -> "SELECT a.x FROM {%s a LEFT OUTER JOIN b ON a.id = b.id}",
+        "escape" -> "SELECT a FROM t WHERE n LIKE '\\_%%' {%s '\\'}",
+        "limit" -> "SELECT a FROM t {%s 5}"
+    )
+
+    test("an opening brace outside string literals and quoted identifiers is refused with the brace rule named") {
+        BraceForms.foreach { case (word, template) =>
+            Seq(word.toUpperCase(java.util.Locale.ROOT), word.toLowerCase(java.util.Locale.ROOT)).foreach { w =>
+                braceRefused(template.format(w))
+            }
+        }
+    }
+
+    test("a brace is refused whatever stands between it and the next word") {
+        val gaps = Seq("", " ", "\t", "\n", "\u0001", "\u001B", " ", "　", " ", "​")
+        gaps.foreach { g =>
+            braceRefused("SELECT 1 AS a {" + g + "call p(1)}")
+            braceRefused("SELECT 1 AS a {" + g + "CALL dbo.p}")
+            braceRefused("SELECT a FROM t WHERE d >= {" + g + "d '2024-01-31'}")
+            braceRefused("SELECT {" + g + "fn UCASE(name)} FROM t")
+            // the return-value form, the gap between every part
+            braceRefused("SELECT 1 AS a {" + g + "?" + g + "=" + g + "call p(1)}")
+            // the same characters in front of the brace
+            braceRefused("SELECT 1 AS a" + g + "{call p(1)}")
+            braceRefused("SELECT a FROM t WHERE d >=" + g + "{d '2024-01-31'}")
+        }
+    }
+
+    test("a brace is refused at any parenthesis depth") {
+        Seq(
+            // a subquery
+            "SELECT * FROM (SELECT a FROM t WHERE d >= {d '2024-01-31'}) s",
+            "SELECT * FROM (SELECT 1 AS a {call p(1)}) s",
+            // a CTE body
+            "WITH c AS (SELECT {fn UCASE(a)} AS u FROM t) SELECT u FROM c",
+            "WITH c AS (SELECT 1 AS a {call p}) SELECT a FROM c",
+            // a function argument
+            "SELECT COALESCE(a, {fn NOW()}) AS n FROM t",
+            "SELECT ISNULL(a, (SELECT 1 AS b {? = call p})) AS n FROM t",
+            // an IN (...) list
+            "SELECT a FROM t WHERE d IN ({d '2024-01-31'}, {d '2024-02-01'})",
+            "SELECT a FROM t WHERE b IN (1, {call p})"
+        ).foreach(braceRefused)
+    }
+
+    test("a brace is refused for limit -1 and for a positive limit") {
+        // `query` calls validateQuery before it looks at the limit, so the
+        // refusal holds for both; the limit-capped text is refused as well.
+        Seq(
+            "SELECT 1 AS a {call p(1)}",
+            "SELECT a FROM t WHERE d >= {d '2024-01-31'} ORDER BY a",
+            "WITH c AS (SELECT a FROM t) SELECT a FROM c {limit 5}"
+        ).foreach { sql =>
+            assert(problem(sql).isDefined, sql)
+            val e = intercept[DatrisException](SqlServerQueryUtil.validateQuery(sql))
+            assert(e.getMessage == BraceRule, sql + " -> " + e.getMessage)
+            Seq(1, 100).foreach { limit =>
+                val capped = SqlServerQueryUtil.applyLimit(sql, limit)
+                assert(problem(capped).isDefined, capped)
+                intercept[DatrisException](SqlServerQueryUtil.validateQuery(capped))
+            }
+        }
+    }
+
+    test("a brace inside a string literal, a bracketed or a double-quoted identifier is accepted") {
+        Seq(
+            "SELECT * FROM t WHERE payload = '{\"a\": 1}'",
+            "SELECT * FROM t WHERE note LIKE '%{fn%'",
+            "SELECT JSON_VALUE(doc, '$.a') FROM t WHERE doc = '{}'",
+            "SELECT [col{1}], \"{x}\" FROM t",
+            "SELECT * FROM t WHERE note = 'it''s {'",
+            "SELECT * FROM t WHERE note = N'{call p} {d ''2024-01-31''}'",
+            "SELECT [a]]{b], \"c\"\"{d\" FROM t",
+            "SELECT [{call p}], \"{fn x}\" FROM t WHERE c = N'{' OR c = '}'",
+            "SELECT * FROM OPENJSON(N'{\"a\": [1, 2]}') AS j",
+            // the wide whitespace set around a brace that sits inside quotes
+            "SELECT * FROM t WHERE note = ' {​call　p} '",
+            "SELECT [\u0001{\u001Bd x}] FROM t",
+            "SELECT \"　{ fn x}\" FROM t WHERE n = N'​{\t?\n= call p}'"
+        ).foreach(accepted)
+    }
+
+    test("the same reads written without braces are accepted") {
+        Seq(
+            "SELECT a FROM t WHERE d >= '2024-01-31'",
+            "SELECT a FROM t WHERE d >= CAST('2024-01-31' AS date)",
+            "SELECT UPPER(name) FROM t",
+            "SELECT SYSDATETIME() AS n, CONCAT(a, b) AS c FROM t",
+            "SELECT a.x FROM a LEFT OUTER JOIN b ON a.id = b.id",
+            "SELECT a FROM t WHERE n LIKE '\\_%' ESCAPE '\\'",
+            "SELECT TOP 5 a FROM t"
+        ).foreach(accepted)
+    }
+
+    test("a query must start with SELECT or WITH, so a statement that is only a name is refused") {
+        Seq(
+            "p",
+            "p 1, 'x'",
+            "dbo.p",
+            "dbo.p 1, 'x'",
+            "[p]",
+            "[dbo].[p]",
+            "[dbo].[p] 1, N'x'",
+            "p (1)",
+            "  dbo.p  ",
+            "selectp 1",
+            "with_p 1",
+            "select_p",
+            "\"p\" 1"
+        ).foreach { sql =>
+            val msg = refusal(sql)
+            assert(msg == AllowlistMessage, sql + " -> " + msg)
+        }
+        // the text the limit step produces always starts with SELECT or WITH
+        Seq(
+            "SELECT a FROM t",
+            "SELECT a FROM t ORDER BY a",
+            "WITH c AS (SELECT a FROM t) SELECT a FROM c"
+        ).foreach { sql =>
+            val out = SqlServerQueryUtil.applyLimit(sql, 10).trim.toUpperCase(java.util.Locale.ROOT)
+            assert(out.startsWith("SELECT ") || out.startsWith("WITH "), out)
+        }
+    }
 }
