@@ -125,6 +125,9 @@ object SqlServerQueryUtil {
     /** Run `sql` (or, when None, a preview of the pipeline's destination table)
      *  against the SQL Server database the named pipeline loads into. */
     def query(pipelineName: String, sql: Option[String], limit: Int = DEFAULT_LIMIT): SqlServerQueryResult = {
+        // The length limit counts the caller's text as received, before the
+        // trim below and before the pipeline is read.
+        sql.foreach(QueryTextLimit.check)
         val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
         if (config == null)
             throw new DatrisException("Pipeline not found: " + pipelineName)
@@ -228,7 +231,8 @@ object SqlServerQueryUtil {
             throw new DatrisException("SQL query cannot be empty")
 
         val normalized = sql.trim.stripSuffix(";").trim
-        val upper = normalized.toUpperCase(Locale.ROOT)
+        // Only the start is tested: upper-case just enough of it (QueryTextCase).
+        val upper = QueryTextCase.upperPrefix(normalized, 16)
         val allowed = startsWithWord(upper, "SELECT") || startsWithWord(upper, "WITH")
         if (!allowed)
             throw new DatrisException(
@@ -278,7 +282,7 @@ object SqlServerQueryUtil {
         }
 
     private def blockedWord(tokens: Vector[Token]): Option[String] = {
-        val words = tokens.collect { case Word(w, _, _) => w.toUpperCase(Locale.ROOT) }
+        val words = tokens.collect { case Word(w, _, _) => QueryTextCase.upper(w) }
         val word = STATEMENT_KEYWORDS.find(words.contains)
         // NEXT VALUE FOR: three words in a row, nothing between them.
         lazy val nextValueFor = tokens.sliding(3).exists {
@@ -454,7 +458,7 @@ object SqlServerQueryUtil {
     private[util] def applyLimit(sql: String, limit: Int): String = {
         val normalized = sql.trim.stripSuffix(";").trim
         val words = topLevelWords(normalized)
-        val upperWords = words.map { case (w, _) => w.toUpperCase(Locale.ROOT) }
+        val upperWords = words.map { case (w, _) => QueryTextCase.upper(w) }
         val hasOrderBy = upperWords.sliding(2).exists(p => p.size == 2 && p(0) == "ORDER" && p(1) == "BY")
         val hasOffset = upperWords.contains("OFFSET")
         // TOP in the final statement's select list: before its first top-level FROM.

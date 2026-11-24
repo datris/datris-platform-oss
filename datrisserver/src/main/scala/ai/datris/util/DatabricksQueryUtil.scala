@@ -123,20 +123,47 @@ object DatabricksQueryUtil {
     // a run of gap characters is read from one match start at most.
     private val GapBeforeParen = "[\\s\\p{Z}\\p{Cc}\\p{Cf}]*+"
 
-    // In front of a called name: no letter, digit or `_`, ASCII or not, the
-    // same class the `ai_` entry reads a name with. So inside one long name
-    // only its first character can start a match, and the name is read once.
-    // Spark takes only ASCII letters, digits and `_` into an unquoted name, so
-    // a listed name directly after a non-ASCII letter or digit is not a call
-    // to it (in backticks it still is: the backtick is the boundary). The
-    // second branch never matches; it widens the lookbehind to two UTF-16
-    // units, so the class is also tried at the first unit of a letter
-    // outside the Basic Multilingual Plane, where it reads the whole letter
-    // (one unit back reads only its second half, which is not a letter).
-    private val NameBoundary = "(?<![\\p{L}\\p{N}_]|(?!)..)"
+    /** Each [[BLOCKED_FUNCTIONS]] entry's first letter and its call pattern,
+      * anchored where it is tried ([[firstCall]] decides where that is). */
+    private lazy val BlockedFunctionPatterns: Seq[(Char, java.util.regex.Pattern)] =
+        BLOCKED_FUNCTIONS.map(fn => (fn.charAt(0), ("(?i)`?(" + fn + ")`?" + GapBeforeParen + "\\(").r.pattern))
 
-    private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] =
-        BLOCKED_FUNCTIONS.map(fn => ("(?i)" + NameBoundary + "`?(" + fn + ")`?" + GapBeforeParen + "\\(").r)
+    /** Whether code point `cp` continues a name: a letter, a number or `_`,
+      * ASCII or not (the class the `ai_` entry reads a name with). */
+    private[util] def continuesName(cp: Int): Boolean =
+        cp == '_' || Character.isLetter(cp) || (Character.getType(cp) match {
+            case Character.DECIMAL_DIGIT_NUMBER | Character.LETTER_NUMBER | Character.OTHER_NUMBER => true
+            case _ => false
+        })
+
+    /** The name in the leftmost call `pattern` finds in `text`, trying it
+      * only where a call can start: at a backtick or at the entry's first
+      * letter, and only where the code point before does not continue a name
+      * ([[continuesName]]; read in code, by code point, so a letter outside
+      * the Basic Multilingual Plane is one letter). Spark takes only ASCII
+      * letters, digits and `_` into an unquoted name, so a listed name
+      * directly after a non-ASCII letter or number is not a call to it; in
+      * backticks it still is, the backtick being the boundary. Inside one
+      * name only its first character is tried, so a long name is read from
+      * one start (two with a backtick in front) and the search takes time in
+      * proportion to the text's length. */
+    private def firstCall(text: String, first: Char, pattern: java.util.regex.Pattern): Option[String] = {
+        val m = pattern.matcher(text)
+        val n = text.length
+        var p = 0
+        while (p < n) {
+            val c = text.charAt(p)
+            if (
+                (c == '`' || Character.toLowerCase(c) == first) &&
+                (p == 0 || !continuesName(text.codePointBefore(p)))
+            ) {
+                m.region(p, n)
+                if (m.lookingAt()) return Some(m.group(1))
+            }
+            p += 1
+        }
+        None
+    }
 
     /** The first [[BLOCKED_FUNCTIONS]] name `sql` calls, in lower case
       * (`IDENTIFIER` in upper case). The text is lower-cased with Unicode
@@ -144,11 +171,10 @@ object DatabricksQueryUtil {
       * those rules fold to an ASCII one (the Kelvin sign) does not hide a
       * name; `(?i)` alone folds ASCII only. */
     private[util] def blockedFunction(sql: String): Option[String] = {
-        val lower = sql.toLowerCase(java.util.Locale.ROOT)
+        val lower = QueryTextCase.lower(sql)
         BlockedFunctionPatterns.view
-            .flatMap(_.findFirstMatchIn(lower))
+            .flatMap { case (first, pattern) => firstCall(lower, first, pattern) }
             .headOption
-            .map(_.group(1))
             .map(name => if (name.equalsIgnoreCase("identifier")) "IDENTIFIER" else name)
     }
 
@@ -157,6 +183,9 @@ object DatabricksQueryUtil {
     /** Run `sql` (or, when None, a preview of the pipeline's destination table)
      *  against the Databricks workspace the named pipeline loads into. */
     def query(pipelineName: String, sql: Option[String], limit: Int = DEFAULT_LIMIT): DatabricksQueryResult = {
+        // The length limit counts the caller's text as received, before the
+        // trim below and before the pipeline is read.
+        sql.foreach(QueryTextLimit.check)
         val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
         if (config == null)
             throw new DatrisException("Pipeline not found: " + pipelineName)
@@ -175,7 +204,7 @@ object DatabricksQueryUtil {
         val normalized = requested.trim.stripSuffix(";")
         // SHOW/DESCRIBE don't take LIMIT and return naturally small result sets.
         val isSelect = {
-            val u = normalized.toUpperCase
+            val u = QueryTextCase.upperPrefix(normalized, 16)
             u.startsWith("SELECT") || u.startsWith("WITH")
         }
         val finalSql = if (!isSelect || unlimited) normalized
@@ -230,7 +259,8 @@ object DatabricksQueryUtil {
 
         // Read-only allowlist: SELECT/WITH for data, SHOW/DESCRIBE for metadata
         // discovery (catalogs, schemas, tables, columns).
-        val upper = normalized.toUpperCase
+        // Only the start is tested: upper-case just enough of it (QueryTextCase).
+        val upper = QueryTextCase.upperPrefix(normalized, 16)
         val allowed = upper.startsWith("SELECT") || upper.startsWith("WITH") ||
             upper.startsWith("SHOW") || upper.startsWith("DESCRIBE") || upper.startsWith("DESC")
         if (!allowed)
@@ -257,7 +287,7 @@ object DatabricksQueryUtil {
     }
 
     private def appendLimitIfNeeded(sql: String, limit: Int): String = {
-        if (!sql.toUpperCase.contains("LIMIT"))
+        if (!QueryTextCase.upper(sql).contains("LIMIT"))
             sql + " LIMIT " + limit
         else
             sql

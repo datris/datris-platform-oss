@@ -289,4 +289,93 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
                 assert(outcome(name + ": 10,000-value IN list")(v(uuidList)).isEmpty, name)
         }
     }
+
+    // ---- review round 1 ----
+
+    // Letters whose upper- or lower-case form is longer than themselves:
+    // sharp s, n preceded by apostrophe, iota with dialytika and tonos (upper),
+    // capital I with dot above (lower).
+    private val Expanding = Seq("ß", "ŉ", "ΐ", "İ")
+    private val ExpandingRun = 450000
+
+    test("a long run of letters whose case form is longer than themselves validates within the bound on all four, and applyLimit too") {
+        Expanding.foreach { ch =>
+            val label = "a run of U+" + "%04X".format(ch.codePointAt(0))
+            Validators.foreach { case (name, _) => accepted(name, label, "SELECT " + (ch * ExpandingRun)) }
+            accepted("SQL Server", label + " as one name", "SELECT " + (ch * ExpandingRun) + " FROM t")
+            val limited = outcome("SQL Server applyLimit on " + label)(SqlServerQueryUtil.applyLimit("SELECT " + (ch * ExpandingRun) + " FROM t", 100))
+            assert(limited.isEmpty, limited)
+        }
+        val big = "SELECT " + (Expanding.mkString * 240000)
+        assert(outcome("QueryTextCase.upper on about a million expanding letters") { QueryTextCase.upper(big); () }.isEmpty)
+        assert(outcome("QueryTextCase.lower on about a million expanding letters") { QueryTextCase.lower(big); () }.isEmpty)
+    }
+
+    test("query text case conversion gives the JDK's result; lower-casing differs only for a final capital sigma") {
+        val special = Seq(0xdf, 0x149, 0x390, 0x3b0, 0x130, 0x131, 0x17f, 0x212a, 0x1f80, 0xfb00, 0xfb03, 0x587, 0x1e96, 0x3a3)
+        val rnd = new scala.util.Random(20261124L)
+        (1 to 20000).foreach { _ =>
+            val sb = new java.lang.StringBuilder
+            (1 to rnd.nextInt(12)).foreach { _ =>
+                val cp = rnd.nextInt(8) match {
+                    case 0 | 1 => 32 + rnd.nextInt(95)
+                    case 2 => special(rnd.nextInt(special.size))
+                    case 3 | 4 => 0x80 + rnd.nextInt(0x600)
+                    case 5 | 6 => rnd.nextInt(0x10000)
+                    case _ => 0x10000 + rnd.nextInt(0x100000)
+                }
+                sb.appendCodePoint(cp)
+            }
+            val s = sb.toString
+            assert(QueryTextCase.upper(s) == s.toUpperCase(java.util.Locale.ROOT), s)
+            val sigma = (x: String) => x.replace('ς', 'σ')
+            assert(sigma(QueryTextCase.lower(s)) == sigma(s.toLowerCase(java.util.Locale.ROOT)), s)
+            assert(QueryTextCase.upperPrefix(s, 3) == QueryTextCase.upper(s.substring(0, s.offsetByCodePoints(0, math.min(3, s.codePointCount(0, s.length))))))
+        }
+    }
+
+    // U+1D400 MATHEMATICAL BOLD CAPITAL A (a letter) and U+1D7CE MATHEMATICAL
+    // BOLD DIGIT ZERO (a number), outside the Basic Multilingual Plane, and
+    // U+1F600 (an emoji, neither).
+    private val NonBmpLetter = "𝐀"
+    private val NonBmpDigit = "𝟎"
+    private val NonBmpOther = "😀"
+
+    test("Databricks: a listed name directly after a letter or number outside the Basic Multilingual Plane is accepted; in backticks it is refused") {
+        val v = validator("Databricks")
+        Seq(NonBmpLetter, NonBmpDigit).foreach { before =>
+            Seq("secret('scope', 'key')", "ai_query('e', 'p')", "identifier('t')").foreach { call =>
+                val plain = "SELECT " + before + call
+                withClue(plain + " -> ")(v(plain))
+                val ticked = "SELECT " + before + "`" + call.takeWhile(_ != '(') + "`" + call.dropWhile(_ != '(')
+                val e = intercept[DatrisException](v(ticked))
+                assert(e.getMessage.startsWith("Query contains blocked function: "), ticked + " -> " + e.getMessage)
+            }
+        }
+        // a character outside the plane that is neither still counts as a boundary
+        val e = intercept[DatrisException](v("SELECT " + NonBmpOther + "secret('scope', 'key')"))
+        assert(e.getMessage == "Query contains blocked function: secret", e.getMessage)
+    }
+
+    test("Databricks: many starts of a listed name joined by letters outside the Basic Multilingual Plane validate within the bound") {
+        accepted("Databricks", "listed-name starts joined by a letter outside the plane", "SELECT " + (("ai_" + NonBmpLetter) * Starts))
+        accepted("Databricks", "listed-name starts joined by a number outside the plane", "SELECT " + (("ai_" + NonBmpDigit) * Starts))
+    }
+
+    test("the length limit counts the text as received on all four query routes, surrounding whitespace included") {
+        // Over the limit only with its surrounding spaces; refused before the pipeline is read.
+        val sql = (" " * 10) + inList(Limit - 20) + (" " * 11)
+        assert(sql.length == Limit + 1)
+        val routes: Seq[(String, () => Unit)] = Seq(
+            "PostgreSQL" -> (() => { PostgresQueryUtil.query(sql); () }),
+            "Snowflake" -> (() => { SnowflakeQueryUtil.query("p", Some(sql)); () }),
+            "SQL Server" -> (() => { SqlServerQueryUtil.query("p", Some(sql)); () }),
+            "Databricks" -> (() => { DatabricksQueryUtil.query("p", Some(sql)); () })
+        )
+        routes.foreach {
+            case (name, run) =>
+                val r = outcome(name + ": over the limit with surrounding spaces")(run())
+                assert(r.contains(tooLong(Limit + 1)), name + " -> " + r)
+        }
+    }
 }

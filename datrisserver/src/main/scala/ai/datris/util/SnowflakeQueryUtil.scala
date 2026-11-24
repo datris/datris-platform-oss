@@ -182,7 +182,7 @@ object SnowflakeQueryUtil {
                 pattern
                     .findAllMatchIn(text)
                     .filter(m => !callOnly || { val e = ends(m.end); e < text.length && text.charAt(e) == '(' })
-                    .map(_.group(1).toUpperCase(java.util.Locale.ROOT))
+                    .map(m => QueryTextCase.upper(m.group(1)))
         }
     }
 
@@ -192,7 +192,7 @@ object SnowflakeQueryUtil {
       * i) does not hide a name; `(?i)` alone folds ASCII only. The two texts'
       * lengths can differ, so each has its own [[gapEnds]]. */
     private[util] def blockedFunction(sql: String): Option[String] =
-        Iterator(sql, sql.toUpperCase(java.util.Locale.ROOT))
+        Iterator(sql, QueryTextCase.upper(sql))
             .flatMap(functionsUsed)
             .find(name => !SYSTEM_FUNCTION_ALLOWLIST.contains(name))
 
@@ -201,6 +201,9 @@ object SnowflakeQueryUtil {
     /** Run `sql` (or, when None, a preview of the pipeline's destination table)
      *  against the Snowflake account the named pipeline loads into. */
     def query(pipelineName: String, sql: Option[String], limit: Int = DEFAULT_LIMIT): SnowflakeQueryResult = {
+        // The length limit counts the caller's text as received, before the
+        // trim below and before the pipeline is read.
+        sql.foreach(QueryTextLimit.check)
         val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
         if (config == null)
             throw new DatrisException("Pipeline not found: " + pipelineName)
@@ -219,7 +222,7 @@ object SnowflakeQueryUtil {
         val normalized = requested.trim.stripSuffix(";")
         // SHOW/DESCRIBE don't take LIMIT and return naturally small result sets.
         val isSelect = {
-            val u = normalized.toUpperCase
+            val u = QueryTextCase.upperPrefix(normalized, 16)
             u.startsWith("SELECT") || u.startsWith("WITH")
         }
         val finalSql = if (!isSelect || unlimited) normalized
@@ -274,7 +277,8 @@ object SnowflakeQueryUtil {
 
         // Read-only allowlist: SELECT/WITH for data, SHOW/DESCRIBE for metadata
         // discovery (databases, schemas, tables, columns).
-        val upper = normalized.toUpperCase
+        // Only the start is tested: upper-case just enough of it (QueryTextCase).
+        val upper = QueryTextCase.upperPrefix(normalized, 16)
         val allowed = upper.startsWith("SELECT") || upper.startsWith("WITH") ||
             upper.startsWith("SHOW") || upper.startsWith("DESCRIBE") || upper.startsWith("DESC")
         if (!allowed)
@@ -304,7 +308,7 @@ object SnowflakeQueryUtil {
     }
 
     private def appendLimitIfNeeded(sql: String, limit: Int): String = {
-        if (!sql.toUpperCase.contains("LIMIT"))
+        if (!QueryTextCase.upper(sql).contains("LIMIT"))
             sql + " LIMIT " + limit
         else
             sql

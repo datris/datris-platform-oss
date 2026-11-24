@@ -58,7 +58,7 @@ The endpoint enforces multiple layers of protection:
 
 - **Read-only transaction** — every query runs inside a transaction that PostgreSQL itself treats as read-only and that is never committed, so a query cannot change data. Each query starts from a clean session.
 - **Time limit** — a query is cancelled after 30 seconds, or after 5 minutes when `limit` is `-1`; a cancelled query returns an error and no rows. Page a large read.
-- **Query length** — query text longer than 1,000,000 characters is rejected before any other check, with `Query text is too long: <n> characters (the limit is 1000000)`
+- **Query length** — query text longer than 1,000,000 characters, counted as sent (surrounding spaces included), is rejected with `Query text is too long: <n> characters (the limit is 1000000)`. Only the API key, the request's parameters and the `limit` value are checked before it; nothing in the query itself is.
 - **SELECT-only** — only queries starting with `SELECT` (or `WITH`) are allowed
 - **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected, as are queries that call server administration, server file, replication or remote-connection functions, or a small set of other functions; the error names the word. Words are matched anywhere in the query, string literals included. One quoting form, Unicode-escape quoting (`U&`), is not accepted.
 - **No stacked queries** — semicolons are not allowed
@@ -250,7 +250,7 @@ The `sql` field echoes the query that actually ran, including any automatically 
 
 ### Safety
 
-- **Query length** — query text longer than 1,000,000 characters is rejected before any other check, with `Query text is too long: <n> characters (the limit is 1000000)`
+- **Query length** — query text longer than 1,000,000 characters, counted as sent (surrounding spaces included), is rejected with `Query text is too long: <n> characters (the limit is 1000000)`. Only the API key, the request's parameters, the access checks and the `limit` value are checked before it; nothing in the query itself is.
 - **Read-only allowlist** — queries must start with `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, or `DESC`. `SHOW`/`DESCRIBE` are allowed so agents can discover databases, schemas, tables, and columns.
 - **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `CALL`, `EXECUTE`, `EXEC`, `PUT`, `REMOVE`, `COPY`, `MERGE`, or `USE` are rejected (`USE` is blocked so a query cannot re-point the session at another database or role)
 - **No stacked queries** — semicolons are not allowed
@@ -323,7 +323,7 @@ The `sql` field echoes the query that actually ran, including any automatically 
 
 ### Safety
 
-Same query length limit (1,000,000 characters, checked first), allowlist, semicolon rule, `--` and `/* */` comment rule, `LIMIT` enforcement and time limit (30 seconds; 5 minutes when `limit: -1`) as [Query Snowflake](#query-snowflake), with the statement blocklist extended for Databricks-specific data-movement and maintenance verbs: `OPTIMIZE`, `VACUUM`, `RESTORE`, `CLONE`, `REFRESH`, `MSCK`, and `DECLARE` are also rejected.
+Same query length limit (1,000,000 characters, counted as sent and checked before anything in the query itself), allowlist, semicolon rule, `--` and `/* */` comment rule, `LIMIT` enforcement and time limit (30 seconds; 5 minutes when `limit: -1`) as [Query Snowflake](#query-snowflake), with the statement blocklist extended for Databricks-specific data-movement and maintenance verbs: `OPTIMIZE`, `VACUUM`, `RESTORE`, `CLONE`, `REFRESH`, `MSCK`, and `DECLARE` are also rejected.
 
 A query that calls one of these functions is rejected with the function named (`Query contains blocked function: <name>`): `http_request`, `remote_query`, every `ai_*` function (`ai_query`, `ai_gen` and the rest), `vector_search`, `secret`, `try_secret`, `read_files`, `read_kafka`, `read_kinesis`, `read_pubsub`, `read_pulsar`, `java_method`, `reflect`, `try_reflect`, and `IDENTIFIER(...)`, which can call any function named by a string (this includes `FROM IDENTIFIER('<table>')`; write the table name instead). Only a call is refused (the name followed by `(`), so a column named `secret` or a table named `ai_results` still reads; a column-list alias with one of these names, such as `WITH secret(a) AS (...)`, is refused too, so pick another alias. The check covers string literals too.
 
@@ -403,7 +403,7 @@ When SQL Server rejects the wrapper itself (a result column without a name such 
 
 ### Safety
 
-- **Query length** — query text longer than 1,000,000 characters is rejected before any other check, with `Query text is too long: <n> characters (the limit is 1000000)`
+- **Query length** — query text longer than 1,000,000 characters, counted as sent (surrounding spaces included), is rejected with `Query text is too long: <n> characters (the limit is 1000000)`. Only the API key, the request's parameters, the access checks and the `limit` value are checked before it; nothing in the query itself is.
 - **Read-only allowlist** — queries must start with `SELECT` or `WITH`. For metadata, select from `INFORMATION_SCHEMA` views, for example `SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES` or `SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'orders'`.
 - **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `DENY`, `EXEC`, `EXECUTE`, `MERGE`, `INTO` (so `SELECT ... INTO` cannot create a table), `USE`, `BULK`, `OPENROWSET`, `OPENDATASOURCE`, `OPENQUERY`, `DBCC`, `BACKUP`, `RESTORE`, `SHUTDOWN`, `KILL`, `RECONFIGURE`, `WAITFOR`, `DECLARE`, `TRIGGER`, `SETUSER`, `REVERT`, `WRITETEXT` or `UPDATETEXT` are rejected. The check covers the whole statement, string literals included, so `WHERE note = 'please delete'` is rejected too
 - **No stacked queries** — semicolons are not allowed

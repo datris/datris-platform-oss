@@ -315,7 +315,8 @@ object PostgresQueryUtil {
         val normalized = sql.trim.stripSuffix(";")
 
         // Must start with SELECT or WITH (CTE)
-        val upper = normalized.toUpperCase
+        // Only the start is tested: upper-case just enough of it (QueryTextCase).
+        val upper = QueryTextCase.upperPrefix(normalized, 16)
         if (!upper.startsWith("SELECT") && !upper.startsWith("WITH"))
             throw new DatrisException("Only SELECT queries are allowed (WITH/CTE is also permitted)")
 
@@ -345,7 +346,7 @@ object PostgresQueryUtil {
     }
 
     private def appendLimitIfNeeded(sql: String, limit: Int): String = {
-        val upperSql = sql.toUpperCase
+        val upperSql = QueryTextCase.upper(sql)
         if (!upperSql.contains("LIMIT"))
             sql + " LIMIT " + limit
         else
