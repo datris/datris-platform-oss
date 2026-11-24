@@ -17,8 +17,49 @@ Connection credentials are retrieved from Vault using the secret name specified 
 | `jdbcUrl`  | JDBC connection string for the database  |
 | `username` | Database user                            |
 | `password` | Database password                        |
+| `queryUsername` | Optional. A separate login for read-back queries; see [Separate query login](#separate-query-login) |
+| `queryPassword` | Optional. That login's password |
 
-The same credentials serve the read-back queries (`query_postgres`, `query_natural` and `POST /api/v1/query/postgres`), which run in read-only transactions. As for any service account, give this role only the privileges it needs (create and write in the destination schemas) rather than a superuser.
+`username` and `password` are the loading login: loads, deletes, schema migrations, the PostgreSQL listings in the Data tab and the health check use it. As for any service account, give it only the privileges it needs (create and write in the destination schemas) rather than a superuser. The read-back queries (`query_postgres`, `query_natural` and `POST /api/v1/query/postgres`) run in read-only transactions and use the same login unless the secret names a separate query login.
+
+## Separate query login
+
+The read-only transaction stops a query from writing, but it does not narrow what the login can read: with the bundled `postgres` superuser, a query can read other databases on the same server, the system catalogs and server settings. To put a second limit behind it, give Datris a login that can only read, and read-back queries connect as that login while loads keep the loading login.
+
+Datris does not create the login or grant anything. Run the SQL yourself as an administrator, in each database the pipelines load into (the default is `datris`). Replace `datris_reader`, `<password>`, `datris`, `public` and `<loading login>` (the `username` in the secret) with your own names:
+
+```sql
+CREATE ROLE datris_reader LOGIN PASSWORD '<password>' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+GRANT CONNECT ON DATABASE datris TO datris_reader;
+-- For each schema the pipelines load into:
+GRANT USAGE ON SCHEMA public TO datris_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO datris_reader;
+-- So that tables a later load creates are readable too:
+ALTER DEFAULT PRIVILEGES FOR ROLE <loading login> IN SCHEMA public GRANT SELECT ON TABLES TO datris_reader;
+```
+
+On PostgreSQL 14 and later you can instead grant the built-in read role, which reads every table, view and sequence in the database, including tables created later:
+
+```sql
+CREATE ROLE datris_reader LOGIN PASSWORD '<password>' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+GRANT CONNECT ON DATABASE datris TO datris_reader;
+GRANT pg_read_all_data TO datris_reader;
+```
+
+Then add the two keys to the platform Postgres secret: **Configuration → Secrets → Platform**, select `postgres`, **Edit**, use **Add Field** to add a field `queryUsername` with the login's name and a field `queryPassword` with its password, and **Save**. The secret is read on every query, so the next query uses the new login; no restart is needed. Editing the secret later keeps both keys: the editor shows `queryPassword` masked and sends it back unchanged unless you type a new one, and an empty password box also keeps the stored value. To stop using the query login, **Clear** both fields and save. A direct Vault write works too, adding the two keys to the existing secret (`vault kv patch secret/oss/postgres queryUsername=datris_reader queryPassword=<password>`, run in the vault container as shown in [Setting Secrets Manually](/ai-configuration#setting-secrets-manually)); the bundled stack seeds the secret only when it is missing, so a restart does not remove them.
+
+What uses which login once both keys are set:
+
+| Uses the query login | Keeps the loading login |
+|---|---|
+| `query_postgres`, `query_natural`, `POST /api/v1/query/postgres`, `POST /api/v1/query/natural` and its column lookup, tap scripts reading platform data through the query API, and the landed-row sample behind a destination-type proposal | Loads, truncates and upserts, table drops on pipeline delete, destination-type migrations, the PostgreSQL database, schema, table and column listings (Data tab and metadata API), the health check and destination availability probe |
+
+Things to know:
+
+- **Both keys or neither.** A secret with `queryUsername` but no `queryPassword` (or the reverse) is refused on every query with a message naming the missing key; queries never fall back to the loading login. Loads are not affected. An empty or blank value counts as not set.
+- **New tables need the default privileges.** A table a load creates after the grants is readable by the query login only through the `ALTER DEFAULT PRIVILEGES` line (or `pg_read_all_data`). Without it, a query on that table answers PostgreSQL's `permission denied`, and a destination-type proposal for its pipeline says the query login has no permission to read the table. Default privileges apply to tables created by the role named in `FOR ROLE`, so name the loading login there. A new schema needs its own `GRANT USAGE` and default privileges.
+- **Check it with doctor.** With the keys set, the `postgres.query_login` [doctor](/doctor) check connects as the query login and warns when it is a superuser or cannot connect.
+- **`SELECT current_user`** through `POST /api/v1/query/postgres` returns the login queries run as.
 
 ## Table Management
 

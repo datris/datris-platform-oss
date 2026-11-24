@@ -150,7 +150,17 @@ object DestSchemaApply {
                 if (!postgresTableExists(config)) return None
                 val db = config.destination.database
                 val sql = PostgresSql.sampleSelect(db.schema, db.table)
-                PostgresQueryUtil.query(sql, postgresDbName(config), limit).asScala.map(_.asScala.toMap).toSeq
+                // Read with the login read-back queries use: an install with a
+                // separate query login whose grants do not cover this table
+                // gets a plain sentence, not the driver's error.
+                try PostgresQueryUtil.query(sql, postgresDbName(config), limit).asScala.map(_.asScala.toMap).toSeq
+                catch {
+                    case e: java.sql.SQLException if e.getSQLState == PostgresInsufficientPrivilege =>
+                        throw new DatrisException(
+                            "The PostgreSQL login Datris uses for queries has no permission to read " + db.schema + "." + db.table +
+                                ". Grant it USAGE on the schema and SELECT on the table: see \"Separate query login\" in the PostgreSQL destination docs."
+                        )
+                }
             case "snowflake" =>
                 val exists = SnowflakeConnectionUtil.withConnection(config.destination.database) { conn =>
                     val statement = conn.createStatement()
@@ -287,6 +297,9 @@ object DestSchemaApply {
     // ------------------------------------------------------------------
     // Postgres: in-place ALTER, one transaction.
     // ------------------------------------------------------------------
+
+    /** PostgreSQL's SQLSTATE for "permission denied" (insufficient_privilege). */
+    private val PostgresInsufficientPrivilege = "42501"
 
     private def postgresDbName(config: PipelineConfig): String =
         if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment

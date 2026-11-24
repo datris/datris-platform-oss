@@ -187,6 +187,11 @@ object PostgresQueryUtil {
             return PostgresPool.withEvictableConnectionFrom(testPool) { (conn, evict) => runOn(conn, finalSql, params, timeout, evict) }
 
         val secrets = SecretsRetrieverUtil.postgresSecrets()
+        // The login queries connect with: the secret's query login when it
+        // carries one, else the loading login. Half-configured is refused here,
+        // before any connection is opened.
+        val (user, pass) = SecretsRetrieverUtil.postgresQueryLogin(secrets)
+        if (SecretsRetrieverUtil.hasQueryLogin(secrets)) noteQueryLogin(user)
         Class.forName("org.postgresql.Driver")
 
         // The secret's URL, with the database percent-encoded into its path
@@ -195,10 +200,23 @@ object PostgresQueryUtil {
 
         // Pooled: this is the interactive path where per-request DriverManager
         // connections hurt most. Connect/login timeouts live in PostgresPool.
-        PostgresPool.withEvictableConnection(jdbcUrl, secrets.username, secrets.password) { (conn, evict) =>
+        // Pools are keyed by (jdbcUrl, user), so the query login has its own.
+        PostgresPool.withEvictableConnection(jdbcUrl, user, pass) { (conn, evict) =>
             runOn(conn, finalSql, params, timeout, evict)
         }
     }
+
+    /** The query user last logged by [[noteQueryLogin]]. */
+    @volatile private var loggedQueryUser: String = null
+
+    /** One info line the first time queries connect with the secret's query
+      * login, and again if that user changes. Names the user only. Not
+      * called when the secret carries no query login. */
+    private def noteQueryLogin(user: String): Unit =
+        if (user != loggedQueryUser) {
+            loggedQueryUser = user
+            logger.info("Read-back queries connect as the Postgres query login '" + user + "' from the Postgres secret")
+        }
 
     /** Runs `finalSql` on `conn` inside [[inReadOnlyTransaction]] and reads
       * every row. The caller's own SQL (no params) stays a plain statement,

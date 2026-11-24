@@ -103,6 +103,10 @@ object DoctorService {
         def optInGroup: Option[String] = None
         def run(): CheckResult
 
+        /** The row this check adds to a report, or None when it does not apply
+          * to this install and adds no row at all. Default: always [[run]]. */
+        def runIfApplies(): Option[CheckResult] = Some(run())
+
         protected def ok(detail: String): CheckResult = CheckResult(id, StatusOk, StatusOk, detail, "")
         protected def warn(detail: String, remediation: String): CheckResult = CheckResult(id, StatusWarn, StatusWarn, detail, remediation)
         protected def error(detail: String, remediation: String): CheckResult = CheckResult(id, StatusError, StatusError, detail, remediation)
@@ -226,6 +230,15 @@ object DoctorService {
         /** Tap runs in the last `hours` that waited for a runner slot, runs turned
           * away after the queue timeout, and the longest wait in ms. */
         def recentRunnerWaits(hours: Int = 24): (Int, Int, Long)
+
+        /** The Postgres secret's separate query login
+          * (plans/stories/postgres-query-role.md). None: the secret carries no
+          * `queryUsername`/`queryPassword` (or cannot be read). Some(Left(why)):
+          * the keys are there but the login could not be checked, or only one
+          * of them is set; `why` carries no password and no URL credentials.
+          * Some(Right((user, superuser))): it connected, and whether that role
+          * has `rolsuper`. */
+        def postgresQueryLogin(): Option[Either[String, (String, Boolean)]] = None
     }
 
     private val Day = 86400L
@@ -1197,6 +1210,41 @@ object DoctorService {
         }
     }
 
+    /** The Postgres secret's separate query login
+      * (plans/stories/postgres-query-role.md, Decision 6). No row at all when
+      * the secret carries no `queryUsername`/`queryPassword`. ok when the
+      * query login connects and is not a superuser; warn when it is a
+      * superuser (`rolsuper`), when only one of the two keys is set, or when
+      * it cannot connect. Not startup-safe: it opens a database connection. */
+    class PostgresQueryLoginCheck(probes: Probes) extends Check {
+        val id = "postgres.query_login"
+        val startupSafe = false
+        private val Docs = "See \"Separate query login\" in the PostgreSQL destination docs."
+        override def runIfApplies(): Option[CheckResult] =
+            probes.postgresQueryLogin().map {
+                case Right((user, false)) =>
+                    ok("read-back queries connect as the query login '" + user + "', which is not a superuser")
+                        .copy(namelessDetail = "read-back queries connect as the query login, which is not a superuser")
+                case Right((user, true)) =>
+                    warn(
+                        "the query login '" + user + "' is a superuser (rolsuper): read-back queries keep superuser reach " +
+                            "behind the read-only transaction",
+                        "Give the query login no superuser: `ALTER ROLE <query login> NOSUPERUSER;`, or create a separate " +
+                            "read-only login and set it as queryUsername / queryPassword in the Postgres secret. " + Docs
+                    ).copy(namelessDetail =
+                        "the query login is a superuser (rolsuper): read-back queries keep superuser reach behind the read-only transaction"
+                    )
+                case Left(why) =>
+                    warn(
+                        "the Postgres secret names a query login that could not be checked: " + why,
+                        "Set both queryUsername and queryPassword in the Postgres secret (or neither, to query with the loading login), " +
+                            "and check that the login exists, its password matches and it may connect to the database. " +
+                            "Until then every read-back query fails. " + Docs
+                    ).copy(namelessDetail = "the Postgres secret names a query login that could not be checked")
+            }
+        def run(): CheckResult = runIfApplies().getOrElse(skip("the Postgres secret names no query login; queries use the loading login"))
+    }
+
     object SharedRun {
         private[util] def limitText(ms: Long): String = if (ms >= 1000L && ms % 1000L == 0L) (ms / 1000L) + " s" else ms + " ms"
     }
@@ -1220,6 +1268,7 @@ object DoctorService {
             new KeyInertScopesCheck(probes),
             new CodeGenIsolationCheck(probes, startup),
             new RunnerConcurrencyCheck(probes),
+            new PostgresQueryLoginCheck(probes),
             new AiSampleValuesCheck(probes),
             new GovernanceControlsCheck(probes),
             new AuditStrictCheck(probes),
@@ -1232,21 +1281,29 @@ object DoctorService {
 
     /** Run one check, timing it and turning a thrown exception into an
       * error row rather than a failed report. */
-    def runOne(check: Check): CheckResult = {
+    def runOne(check: Check): CheckResult = timed(check)(Some(check.run())).get
+
+    /** [[runOne]] for a report: None when the check does not apply to this
+      * install ([[Check.runIfApplies]]), so it adds no row. */
+    def runIfApplies(check: Check): Option[CheckResult] = timed(check)(check.runIfApplies())
+
+    private def timed(check: Check)(body: => Option[CheckResult]): Option[CheckResult] = {
         val start = System.currentTimeMillis()
         val r =
-            try check.run()
+            try body
             catch {
                 case e: Exception =>
-                    CheckResult(
-                        check.id,
-                        StatusError,
-                        StatusError,
-                        "check failed: " + e.getClass.getSimpleName + ": " + e.getMessage,
-                        "This is a doctor bug — report it with the server log."
+                    Some(
+                        CheckResult(
+                            check.id,
+                            StatusError,
+                            StatusError,
+                            "check failed: " + e.getClass.getSimpleName + ": " + e.getMessage,
+                            "This is a doctor bug — report it with the server log."
+                        )
                     )
             }
-        r.copy(ms = System.currentTimeMillis() - start)
+        r.map(_.copy(ms = System.currentTimeMillis() - start))
     }
 
     /** Assemble a report. `mode` = `quick` (startup-safe subset) or `full`
@@ -1267,7 +1324,7 @@ object DoctorService {
                 case None => !quick || c.startupSafe
             }
         }
-        val results = selected.map(runOne)
+        val results = selected.flatMap(c => runIfApplies(c))
         Report(if (quick) "quick" else "full", Map("server" -> serverVersion) ++ clients, results)
     }
 
@@ -1275,7 +1332,8 @@ object DoctorService {
       * throws is caught here — a doctor bug must never block boot. */
     def runStartup(probes: Probes, slots: Slots, serverVersion: String): Seq[CheckResult] = {
         try {
-            val results = checks(probes, slots, serverVersion, Map.empty, startup = true).filter(c => c.startupSafe && c.optInGroup.isEmpty).map(runOne)
+            val results =
+                checks(probes, slots, serverVersion, Map.empty, startup = true).filter(c => c.startupSafe && c.optInGroup.isEmpty).flatMap(c => runIfApplies(c))
             results.foreach { r =>
                 if (r.status == StatusWarn || r.status == StatusError)
                     logger.warn("DOCTOR " + r.id + ": " + r.detail + (if (r.remediation.nonEmpty) " — " + r.remediation else ""))
@@ -1556,6 +1614,48 @@ object DoctorService {
             val waited = logs.filter(l => l.queuedMs > 0 && !turnedAway(l))
             val rejected = logs.count(turnedAway)
             (waited.size, rejected, if (waited.isEmpty) 0L else waited.map(_.queuedMs).max)
+        }
+
+        override def postgresQueryLogin(): Option[Either[String, (String, Boolean)]] = {
+            val secrets =
+                try SecretsRetrieverUtil.postgresSecrets()
+                catch {
+                    case e: Exception =>
+                        logger.debug("Postgres query login check: the Postgres secret could not be read: " + e.getMessage)
+                        return None
+                }
+            if (!SecretsRetrieverUtil.hasQueryLogin(secrets)) return None
+            val login =
+                try SecretsRetrieverUtil.postgresQueryLogin(secrets)
+                catch { case e: ai.datris.model.DatrisException => return Some(Left(e.getMessage)) }
+            Some(
+                try {
+                    Class.forName("org.postgresql.Driver")
+                    val props = new java.util.Properties()
+                    props.setProperty("user", login._1)
+                    props.setProperty("password", login._2)
+                    props.setProperty("connectTimeout", "5")
+                    props.setProperty("loginTimeout", "5")
+                    props.setProperty("socketTimeout", "5")
+                    val url = PostgresSql.jdbcUrl(secrets.jdbcUrl, DatrisEnvironment.current.postgresDatabase)
+                    val conn = java.sql.DriverManager.getConnection(url, props)
+                    try {
+                        conn.setReadOnly(true)
+                        val stmt = conn.createStatement()
+                        try {
+                            stmt.setQueryTimeout(5)
+                            val rs = stmt.executeQuery("SELECT current_user, rolsuper FROM pg_roles WHERE rolname = current_user")
+                            try {
+                                if (rs.next()) Right((rs.getString(1), rs.getBoolean(2)))
+                                else Left("connected, but the role's rolsuper flag could not be read")
+                            } finally rs.close()
+                        } finally stmt.close()
+                    } finally conn.close()
+                } catch {
+                    case e: Exception =>
+                        Left("could not connect as the query login: " + LogRedactUtil.redactJdbcUrl(String.valueOf(e.getMessage)))
+                }
+            )
         }
 
         def probeEmbedding(provider: String, endpoint: String, model: String, apiKey: String, timeoutMs: Int): (Int, String) = {

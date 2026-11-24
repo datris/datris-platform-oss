@@ -28,8 +28,43 @@ object SecretsRetrieverUtil {
         PostgresSecrets(
             username,
             password,
-            jdbcUrl
+            jdbcUrl,
+            // Optional: a separate login for read-back queries (null when absent).
+            dbSecret.get("queryUsername"),
+            dbSecret.get("queryPassword")
         )
+    }
+
+    /** True when `value` carries something other than whitespace. */
+    private def present(value: String): Boolean = value != null && value.trim.nonEmpty
+
+    /** True when the Postgres secret carries either query key (a non-blank
+      * `queryUsername` or `queryPassword`). */
+    def hasQueryLogin(secrets: PostgresSecrets): Boolean =
+        present(secrets.queryUsername) || present(secrets.queryPassword)
+
+    /** The (user, password) a read-back query connects with: the secret's
+      * `queryUsername`/`queryPassword` when both are set, exactly as written;
+      * the loading `username`/`password` when neither is. A key that is
+      * missing, empty or only whitespace counts as absent. One without the
+      * other is refused with a DatrisException naming the missing key (never
+      * a fall back to the loading login); the message carries no value of the
+      * secret. Pure. */
+    def postgresQueryLogin(secrets: PostgresSecrets): (String, String) = {
+        val hasUser = present(secrets.queryUsername)
+        val hasPass = present(secrets.queryPassword)
+        if (hasUser && hasPass) (secrets.queryUsername, secrets.queryPassword)
+        else if (!hasUser && !hasPass) (secrets.username, secrets.password)
+        else if (hasUser)
+            throw new DatrisException(
+                "The Postgres secret names a query user (queryUsername) but no query password (queryPassword). " +
+                    "Add queryPassword to the Postgres secret, or remove queryUsername to query with the loading login."
+            )
+        else
+            throw new DatrisException(
+                "The Postgres secret has a query password (queryPassword) but no query user (queryUsername). " +
+                    "Add queryUsername to the Postgres secret, or remove queryPassword to query with the loading login."
+            )
     }
 
     def kafkaProducerSecrets(): KafkaProducerSecrets = {

@@ -251,7 +251,7 @@ ActiveMQ credentials are stored in Vault under `secrets.activeMQSecretName`:
 |----------|---------|-------------|
 | `postgres.database` | `datris` | Default database name used by `/api/v1/query/postgres` and `/api/v1/metadata/postgres/*` when no `database` parameter is supplied. Also injected into tap scripts as the `DATRIS_POSTGRES_DATABASE` environment variable. |
 
-PostgreSQL connection details (`username`, `password`, `jdbcUrl`) are stored in Vault under `secrets.postgresSecretName` — see the Vault Secret Formats section below.
+PostgreSQL connection details (`username`, `password`, `jdbcUrl`, and optionally `queryUsername` and `queryPassword`) are stored in Vault under `secrets.postgresSecretName` — see the Vault Secret Formats section below.
 
 ### Kafka Consumer (Optional)
 
@@ -323,6 +323,8 @@ See [AI Configuration](/ai-configuration) for full setup details.
   "jdbcUrl": "jdbc:postgresql://localhost:5432"
 }
 ```
+
+`username` and `password` are the loading login. Two optional keys, `queryUsername` and `queryPassword`, name a separate login that read-back queries (`query_postgres`, `query_natural`, `POST /api/v1/query/postgres`) connect with instead; set both or neither (one without the other refuses every query), and an empty value counts as not set. Datris creates no login and grants nothing. See [Separate query login](/destinations/postgres#separate-query-login).
 
 ### MySQL
 ```json
