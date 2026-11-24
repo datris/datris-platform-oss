@@ -97,7 +97,17 @@ object DatabricksQueryUtil {
       * preview), try_reflect (Databricks SQL, Runtime 14.1+; found during the
       * check, added beside reflect). Documented for Databricks Runtime only,
       * so unavailable on a SQL warehouse today but refused in case that
-      * changes: java_method, reflect. Not confirmed: none was executed. */
+      * changes: java_method, reflect. Not confirmed: none was executed.
+      *
+      * Vendor check, 2026-11-24 (same pages, fetched, not run): read_statestore
+      * and read_state_metadata read a streaming checkpoint location, and
+      * cloud_files_state an ingest checkpoint directory, all on Databricks
+      * SQL; list_secrets returns the secret scope and key names the identity
+      * can see (no values; Databricks SQL, preview). Left accepted:
+      * event_log (callable only by the owner of the table, names a table or
+      * pipeline), table_changes (a named table under SELECT), range, explode
+      * and the other generators. Reads of a file location in place of a
+      * table are refused by [[pathRead]], not here. */
     private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
         "http_request",
         "remote_query",
@@ -113,7 +123,11 @@ object DatabricksQueryUtil {
         "java_method",
         "reflect",
         "try_reflect",
-        "identifier"
+        "identifier",
+        "read_statestore",
+        "read_state_metadata",
+        "cloud_files_state",
+        "list_secrets"
     )
 
     // [[firstCall]] tries an entry only at a backtick or at the entry's
@@ -185,6 +199,176 @@ object DatabricksQueryUtil {
             .flatMap { case (first, pattern) => firstCall(lower, first, pattern) }
             .headOption
             .map(name => if (name.equalsIgnoreCase("identifier")) "IDENTIFIER" else name)
+    }
+
+    /** The format words a table name may start with to read files by path
+      * (`json.`/p``), compared in ASCII lower case. */
+    private val PathFormatWords: Set[String] =
+        Set("json", "csv", "avro", "parquet", "orc", "binaryfile", "text", "delta", "xml")
+    private val LongestPathFormatWord = PathFormatWords.map(_.length).max
+
+    /** Whether code point `cp` may stand between two parts of a name: whitespace
+      * taken widely, the set [[GapBeforeParen]] reads (ASCII whitespace,
+      * Unicode separators, control and format characters). */
+    private def gapCodePoint(cp: Int): Boolean =
+        Character.isWhitespace(cp) || Character.isSpaceChar(cp) || (Character.getType(cp) match {
+            case Character.CONTROL | Character.FORMAT => true
+            case _ => false
+        })
+
+    /** Whether `sql` names a file location in place of a table: a two-part
+      * name whose first part is not preceded by `.` (gap characters between
+      * allowed) and whose second part is quoted, where either the first part
+      * is a format word ([[PathFormatWords]], bare or quoted, any ASCII letter
+      * case) and the second part holds `/` or `:`, or the second part starts
+      * with `/` or holds `:/` whatever the first part. Gap characters
+      * ([[gapCodePoint]]) may stand on both sides of the dot. A further
+      * `.part` after the second part does not matter: the name is refused
+      * either way.
+      *
+      * Vendor check, 2026-11-24 (docs.databricks.com/aws/en, "Names" and
+      * "Work with files on Databricks", fetched, not run): a table name may be
+      * `{ file_format | `file_format` } . `path``, the format one of json, csv,
+      * avro, parquet, orc, binaryFile, text, delta (case insensitive), and a
+      * path as a table needs backticks; volume paths, cloud URIs, `file:` and
+      * DBFS mount paths are all shown read this way. UNCONFIRMED: xml as a
+      * format word on a SQL warehouse (kept in the list); whether a backticked
+      * name with no `/` falls back to a path (`delta.`events`` is not refused).
+      *
+      * The text is read twice, each time once from start to end with a fixed
+      * amount of state, so the cost is in proportion to its length whatever
+      * it holds:
+      *  - as Spark lexes it: `'...'` and `"..."` are string literals (a
+      *    backslash escapes the next character; `r'...'` / `r"..."` are raw,
+      *    with no escapes), so a backtick inside a literal cannot shift where a
+      *    backticked name starts. A `"..."` token also counts as a quoted name,
+      *    as it is one when the session reads double quotes as identifiers; its
+      *    escapes are not decoded, so one holding a backslash counts as both a
+      *    format word and a path;
+      *  - with quote characters taken as ordinary characters, so a path written
+      *    inside a string literal is refused too, as the function list behaves.
+      * In both, a backticked name runs to the next backtick that is not one of
+      * a doubled pair (to the end of the text when there is none), and a bare
+      * name is a run of code points that continue a name ([[continuesName]]),
+      * so a format word directly after or before a letter, digit or `_`
+      * (ASCII or not) is part of a longer name. Pure: takes the text as
+      * [[validateQuery]] holds it. */
+    private[util] def pathRead(sql: String): Boolean =
+        sql != null && (pathReadScan(sql, literals = true) || pathReadScan(sql, literals = false))
+
+    private def asciiLower(c: Char): Char = if (c >= 'A' && c <= 'Z') (c + 32).toChar else c
+
+    /** One pass of [[pathRead]]; `literals` chooses whether quote characters
+      * open string literals. Keeps only the kinds of the last three tokens
+      * (gaps are not tokens) and whether the latest name was a format word. */
+    private def pathReadScan(sql: String, literals: Boolean): Boolean = {
+        val Other = 0
+        val Dot = 1
+        val Name = 2
+        val n = sql.length
+        var last = Other // the latest token
+        var before = Other // the one before it
+        var beforeThat = Other // the one before that
+        var lastNameFormat = false
+        // Facts about the quoted name just read
+        var qFormat = false
+        var qSlash = false
+        var qColon = false
+        var qStartsSlash = false
+        var qColonSlash = false
+
+        def push(kind: Int): Unit = { beforeThat = before; before = last; last = kind }
+
+        /** Reads a quoted name opened at `open` by `q`; `doubled` says whether
+          * a doubled `q` is part of it (backticks), else a backslash escapes the
+          * next character (double-quoted strings), unless `raw`. Sets the q*
+          * facts; returns the index after the name. */
+        def quoted(open: Int, q: Char, doubled: Boolean, raw: Boolean): Int = {
+            qFormat = false; qSlash = false; qColon = false; qStartsSlash = false; qColonSlash = false
+            val word = new java.lang.StringBuilder(LongestPathFormatWord + 1)
+            var wordFits = true
+            var sawEscape = false
+            var prev: Char = 0
+            var first = true
+            var i = open + 1
+            var done = false
+            while (!done && i < n) {
+                val c = sql.charAt(i)
+                if (c == q && doubled && i + 1 < n && sql.charAt(i + 1) == q) {
+                    if (wordFits) { if (word.length < LongestPathFormatWord) word.append(q) else wordFits = false }
+                    prev = q; first = false; i += 2
+                } else if (c == q) {
+                    done = true; i += 1
+                } else if (c == '\\' && !doubled && !raw) {
+                    sawEscape = true; i += 2
+                } else {
+                    if (c == '/') { qSlash = true; if (first) qStartsSlash = true; if (prev == ':') qColonSlash = true }
+                    if (c == ':') qColon = true
+                    if (wordFits) { if (word.length < LongestPathFormatWord) word.append(asciiLower(c)) else wordFits = false }
+                    prev = c; first = false; i += 1
+                }
+            }
+            qFormat = (wordFits && PathFormatWords.contains(word.toString)) || sawEscape
+            if (sawEscape) { qSlash = true; qColon = true; qStartsSlash = true; qColonSlash = true }
+            math.min(i, n)
+        }
+
+        /** After a quoted name: whether it is the path part of a refused name. */
+        def refusedHere(): Boolean =
+            last == Dot && before == Name && beforeThat != Dot &&
+                ((lastNameFormat && (qSlash || qColon)) || qStartsSlash || qColonSlash)
+
+        var p = 0
+        while (p < n) {
+            val cp = sql.codePointAt(p)
+            val width = Character.charCount(cp)
+            if (gapCodePoint(cp)) p += width
+            else if (cp == '.') { push(Dot); p += 1 }
+            else if (cp == '`' || (cp == '"' && literals)) {
+                p = quoted(p, cp.toChar, doubled = cp == '`', raw = false)
+                if (refusedHere()) return true
+                push(Name); lastNameFormat = qFormat
+            } else if (cp == '\'' && literals) {
+                // a string literal: opaque, backslash escapes
+                var i = p + 1
+                var done = false
+                while (!done && i < n) {
+                    val c = sql.charAt(i)
+                    if (c == '\\') i += 2
+                    else { i += 1; if (c == '\'') done = true }
+                }
+                p = math.min(i, n)
+                push(Other)
+            } else if (continuesName(cp)) {
+                val start = p
+                var end = p
+                while (end < n && continuesName(sql.codePointAt(end))) end += Character.charCount(sql.codePointAt(end))
+                val len = end - start
+                val rawQuote = if (literals && len == 1 && end < n && (cp == 'r' || cp == 'R')) sql.charAt(end) else 0.toChar
+                if (rawQuote == '\'') {
+                    // a raw string literal: opaque, no escapes
+                    var i = end + 1
+                    while (i < n && sql.charAt(i) != '\'') i += 1
+                    p = math.min(i + 1, n)
+                    push(Other)
+                } else if (rawQuote == '"') {
+                    p = quoted(end, '"', doubled = false, raw = true)
+                    if (refusedHere()) return true
+                    push(Name); lastNameFormat = qFormat
+                } else {
+                    var fmt = len <= LongestPathFormatWord
+                    if (fmt) {
+                        val sb = new java.lang.StringBuilder(len)
+                        var i = start
+                        while (i < end) { sb.append(asciiLower(sql.charAt(i))); i += 1 }
+                        fmt = PathFormatWords.contains(sb.toString)
+                    }
+                    p = end
+                    push(Name); lastNameFormat = fmt
+                }
+            } else { push(Other); p += width }
+        }
+        false
     }
 
     case class DatabricksQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
@@ -293,6 +477,10 @@ object DatabricksQueryUtil {
         }
 
         blockedFunction(normalized).foreach(fn => throw new DatrisException("Query contains blocked function: " + fn))
+
+        // No part of the caller's path is echoed.
+        if (pathRead(normalized))
+            throw new DatrisException("Queries cannot read from a file path; name a table instead")
     }
 
     private def appendLimitIfNeeded(sql: String, limit: Int): String = {

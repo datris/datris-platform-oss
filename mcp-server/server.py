@@ -2817,7 +2817,10 @@ def _base_tools():
                 "targeted and let the default LIMIT stand unless the user asks for more. If the warehouse is "
                 "stopped, the first query auto-starts it and may take longer. "
                 "Calls to http_request, remote_query, any ai_* function, vector_search, secret/try_secret, read_files, "
-                "the streaming readers, java_method/reflect/try_reflect and IDENTIFIER(...) are refused. "
+                "the streaming readers, read_statestore, read_state_metadata, cloud_files_state, list_secrets, "
+                "java_method/reflect/try_reflect and IDENTIFIER(...) are refused. "
+                "A read from a file path in place of a table (a format word or any qualifier before a backticked "
+                "location, such as json.`<path>`) is refused; name the table instead. "
                 "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={
