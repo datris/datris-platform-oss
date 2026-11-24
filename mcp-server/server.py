@@ -2786,6 +2786,7 @@ def _base_tools():
                 "UNION/EXCEPT/INTERSECT, unbalanced parentheses, a number joined to a word, control-flow or transaction words "
                 "(SET, BEGIN, WHILE, IF, PRINT and others) and NEXT VALUE FOR; the query is always rolled back. "
                 "Brace escapes such as {d '...'} and {fn ...} are refused; write the date as a string and use the T-SQL function. "
+                "The text {limit ...} is not allowed anywhere, even inside a string or a quoted name; use the limit parameter. "
                 "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={

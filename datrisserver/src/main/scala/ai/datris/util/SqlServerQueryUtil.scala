@@ -114,6 +114,10 @@ object SqlServerQueryUtil {
         "Curly braces are not allowed in queries outside string literals; " +
             "write dates as '2024-01-31' and use T-SQL function names instead of {d ...} and {fn ...}"
 
+    private[util] val LimitEscapeRule =
+        "The text {limit ...} is not allowed anywhere in a query, even inside a string or a quoted name; " +
+            "use the request's limit instead"
+
     // Words that may stand right before a second SELECT of the same statement.
     private val SetOperators = Set("UNION", "EXCEPT", "INTERSECT")
 
@@ -263,6 +267,37 @@ object SqlServerQueryUtil {
         }
 
         singleStatementProblem(normalized).foreach(problem => throw new DatrisException(problem))
+
+        // After the scan, so a brace outside quotes keeps the brace rule's message.
+        if (hasLimitEscape(normalized)) throw new DatrisException(LimitEscapeRule)
+    }
+
+    /** Whether `sql` holds, anywhere, quoted or not, an opening brace followed
+      * by optional whitespace, the word `limit` (case-insensitive) and one
+      * whitespace character. Checked against mssql-jdbc 12.8.2 on 2026-11-24
+      * (class files read with javap): on a plain `Statement`, the only rewrite
+      * the driver applies to text that starts with SELECT or WITH is its limit
+      * escape, entered when its pattern `\{\s*limit\s+...` is found anywhere
+      * in the text. That rewrite tracks only single quotes, not `[...]` or
+      * `"..."`, and deletes the escape together with the character in front of
+      * it, so it can change where a quoted name or literal ends and send text
+      * other than the text validated here. This test is a superset of the
+      * driver's gate (its `\s` is the same ASCII set; `regionMatches` with
+      * ignoreCase is wider than its `[lL]...` classes), so the driver never
+      * enters that rewrite. One pass: each whitespace run is skipped once. */
+    private[util] def hasLimitEscape(sql: String): Boolean = {
+        def ws(c: Char): Boolean = c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\f' || c == '\r'
+        val n = sql.length
+        var from = 0
+        while (from < n) {
+            val b = sql.indexOf('{', from)
+            if (b < 0) return false
+            var i = b + 1
+            while (i < n && ws(sql.charAt(i))) i += 1
+            if (i + 5 < n && sql.regionMatches(true, i, "limit", 0, 5) && ws(sql.charAt(i + 5))) return true
+            from = i
+        }
+        false
     }
 
     /** Why `sql` is not exactly one read-only statement, or None when it is.

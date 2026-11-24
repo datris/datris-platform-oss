@@ -842,4 +842,123 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
             assert(out.startsWith("SELECT ") || out.startsWith("WITH "), out)
         }
     }
+
+    // =====================================================================
+    // Review follow-up: the text the driver sends is the text that was
+    // validated. The driver's limit escape is refused anywhere in the text,
+    // quoted or not, and the driver's own translator leaves every accepted
+    // text unchanged. Every case above this line is unedited.
+    // =====================================================================
+
+    private val LimitRule =
+        "The text {limit ...} is not allowed anywhere in a query, even inside a string or a quoted name; " +
+            "use the request's limit instead"
+
+    private def limitRefused(sql: String): Unit = {
+        val msg = refusal(sql)
+        assert(msg == LimitRule, sql + " -> " + msg)
+    }
+
+    test("a limit escape is refused anywhere in the text, inside quotes too") {
+        Seq(
+            "SELECT 1 AS a \"{limit 1} {call p} AS [b\"]",
+            "SELECT 1 AS a \"{limit 1} x AS [b\"] FROM t",
+            "SELECT 1 AS a, 2 AS \"'\" FROM t WHERE b = '{limit 1} x [y']",
+            "SELECT \"a{LIMIT\t5}\" FROM t",
+            "SELECT [a{ limit 5}] FROM t",
+            "SELECT * FROM t WHERE x = 'x {limit 5}'",
+            "SELECT [x{limit 1 offset 2}] FROM t",
+            "SELECT * FROM t WHERE x = N'{\u000B\f\r\nLiMiT\n5}'",
+            "WITH c AS (SELECT a FROM t WHERE b = '{limit 5}') SELECT a FROM c"
+        ).foreach(limitRefused)
+    }
+
+    test("a brace outside quotes keeps the brace rule's message even before the word limit") {
+        Seq("SELECT a FROM t {limit 5}", "SELECT a FROM t { LIMIT 5}").foreach(braceRefused)
+    }
+
+    test("brace text inside quotes that the driver does not read as a limit escape is accepted") {
+        Seq(
+            "SELECT * FROM t WHERE doc = '{\"limit\": 5}'",
+            "SELECT * FROM t WHERE doc = '{limit:5}'",
+            "SELECT * FROM t WHERE doc = '{limit}'",
+            "SELECT [{limits 5}] FROM t",
+            "SELECT \"{ limitx 5}\" FROM t",
+            "SELECT * FROM t WHERE doc = '{ \"a\": \"limit 5\" }'"
+        ).foreach(accepted)
+    }
+
+    /** The driver's own escape translator (mssql-jdbc), reached by reflection:
+      * it is package-private. The same call the driver makes for a plain
+      * Statement whose text holds a brace. */
+    private lazy val translator: String => Either[Throwable, String] = {
+        val cls = Class.forName("com.microsoft.sqlserver.jdbc.JDBCSyntaxTranslator")
+        val ctor = cls.getDeclaredConstructor()
+        ctor.setAccessible(true)
+        val translate = cls.getDeclaredMethod("translate", classOf[String])
+        translate.setAccessible(true)
+        (sql: String) =>
+            try Right(translate.invoke(ctor.newInstance(), sql).asInstanceOf[String])
+            catch { case e: java.lang.reflect.InvocationTargetException => Left(e.getCause) }
+    }
+
+    private def isAccepted(sql: String): Boolean =
+        try { SqlServerQueryUtil.validateQuery(sql); true }
+        catch { case _: DatrisException => false }
+
+    test("for every text the validator accepts, the driver's translator sends it unchanged") {
+        val refusedShapes = Seq(
+            "SELECT 1 AS a \"{limit 1} {call p} AS [b\"]",
+            "SELECT 1 AS a, 2 AS \"'\" FROM t WHERE b = '{limit 1} x [y']",
+            "SELECT [a{limit 5}] FROM t",
+            "SELECT [x{limit 1 offset 2}] FROM t",
+            "SELECT * FROM t WHERE x = 'x {limit 5}'",
+            "SELECT a FROM t {limit 5}",
+            "SELECT 1 AS a {call p(1)}",
+            "SELECT {fn UCASE(name)} FROM t",
+            "SELECT a FROM t WHERE d >= {d '2024-01-31'}"
+        )
+        val acceptedShapes = Seq(
+            "SELECT a FROM t",
+            "SELECT a FROM t ORDER BY a",
+            "WITH c AS (SELECT a FROM t) SELECT a FROM c",
+            "SELECT * FROM t WHERE payload = '{\"a\": 1}'",
+            "SELECT * FROM t WHERE note LIKE '%{fn%'",
+            "SELECT JSON_VALUE(doc, '$.a') FROM t WHERE doc = '{}'",
+            "SELECT [col{1}], \"{x}\" FROM t",
+            "SELECT * FROM t WHERE note = 'it''s {'",
+            "SELECT * FROM t WHERE note = N'{call p} {d ''2024-01-31''}'",
+            "SELECT [a]]{b], \"c\"\"{d\" FROM t",
+            "SELECT [{call p}], \"{fn x}\" FROM t WHERE c = N'{' OR c = '}'",
+            "SELECT * FROM OPENJSON(N'{\"a\": [1, 2]}') AS j",
+            "SELECT * FROM t WHERE note = ' {​call　p} '",
+            "SELECT [\u0001{\u001Bd x}] FROM t",
+            "SELECT \"　{ fn x}\" FROM t WHERE n = N'​{\t?\n= call p}'",
+            "SELECT * FROM t WHERE doc = '{\"limit\": 5}'",
+            "SELECT * FROM t WHERE doc = '{limit:5}'",
+            "SELECT * FROM t WHERE doc = '{limit}'",
+            "SELECT [{limits 5}] FROM t",
+            "SELECT \"{ limitx 5}\" FROM t",
+            "SELECT a FROM t WHERE n LIKE '\\_%' ESCAPE '\\'",
+            "SELECT TOP 5 a FROM t ORDER BY a",
+            "SELECT a FROM t ORDER BY a OFFSET 2 ROWS FETCH NEXT 3 ROWS ONLY",
+            "SELECT * FROM t WHERE c = '?' AND d = [?] AND e = \"? = x\""
+        )
+        acceptedShapes.foreach(sql => assert(isAccepted(sql), sql))
+        refusedShapes.foreach(sql => assert(!isAccepted(sql), sql))
+        // Every text that could be sent: as given, and as the limit step
+        // rewrites it for a positive limit (limit -1 sends it as given).
+        (acceptedShapes ++ refusedShapes).foreach { sql =>
+            Seq(sql, SqlServerQueryUtil.applyLimit(sql, 1), SqlServerQueryUtil.applyLimit(sql, 100))
+                .filter(isAccepted)
+                .foreach { text =>
+                    assert(translator(text) == Right(text), text + " -> " + translator(text))
+                }
+        }
+        // The translator is live: it does rewrite the limit escape shapes,
+        // which is why they are refused.
+        Seq("SELECT [a{limit 5}] FROM t", "SELECT a FROM t {limit 5}").foreach { sql =>
+            assert(translator(sql) != Right(sql), sql)
+        }
+    }
 }

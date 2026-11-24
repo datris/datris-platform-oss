@@ -4143,7 +4143,7 @@ paths:
                 sql:
                   type: string
                   maxLength: 1000000
-                  description: "Read-only T-SQL to execute (SELECT or WITH, no semicolons, comments or brace escapes). Omit to preview the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
+                  description: "Read-only T-SQL to execute (SELECT or WITH, no semicolons, comments or brace escapes; the text `{limit ...}` is refused even inside a string or quoted name, use `limit`). Omit to preview the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                 limit:
                   type: integer
                   default: 100
