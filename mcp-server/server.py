@@ -2760,9 +2760,10 @@ def _base_tools():
                 "Calls to a model or a search or agent service are refused too: any function whose name begins AI_, "
                 "anything in the SNOWFLAKE.CORTEX schema, CORTEX_SEARCH_BATCH, EXECUTE_AI_EVALUATION, and method calls "
                 "written with ! (name!METHOD(...)); != and the VECTOR_* functions are fine. "
-                "This check is on the text, string literals and quoted identifiers included, so an ai_ name, or a ! "
-                "and a word, followed by ( is refused wherever it stands (a CTE or alias with a column list too); "
-                "rename the CTE or alias, or split the literal with ||. "
+                "This check is on the text, string literals, quoted identifiers and // comments included, so an ai_ "
+                "name, CORTEX_SEARCH_BATCH, EXECUTE_AI_EVALUATION, or a ! and a word, followed by ( is refused "
+                "wherever it stands (a CTE or alias with a column list too); rename the CTE or alias, or split the "
+                "literal with ||. "
                 "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={
