@@ -206,6 +206,21 @@ object DestinationTargets {
     /** 400 refusal text for [[blankVectorTableName]]; names nothing. */
     val BlankVectorTableRefusal: String = "A pgvector destination needs a table name. Set destination.pgvector.tableName."
 
+    /** True when the config has a pgvector destination whose `schemaName`
+      * or `tableName` (each on its own) is longer than PostgreSQL keeps
+      * ([[PgIdentifier.tooLong]]: over 63 UTF-8 bytes). PostgreSQL would cut
+      * it, so it could land in the table another pipeline's name is cut to.
+      * A new or changed one is refused for every caller
+      * (`PipelineAPIController.vectorTableNameRefusal`); a stored one keeps
+      * working with the table PostgreSQL made of it. */
+    def longVectorTableName(c: PipelineConfig): Boolean =
+        c != null && c.destination != null && c.destination.pgvector != null &&
+            (PgIdentifier.tooLong(c.destination.pgvector.schemaName) || PgIdentifier.tooLong(c.destination.pgvector.tableName))
+
+    /** 400 refusal text for [[longVectorTableName]]; names nothing. */
+    val LongVectorTableRefusal: String =
+        "The pgvector schema and table names must each be at most 63 bytes, the PostgreSQL limit for a name."
+
     // ------------------------------------------------ qdrant, weaviate, milvus, chroma containers
 
     /** The vector stores whose collection (weaviate: class) is checked for a

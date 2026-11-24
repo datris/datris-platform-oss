@@ -300,4 +300,33 @@ class PipelineDeletePlanSpec extends AnyFunSuite {
         assert(!tableKept(a, Seq(a, c)))
         assert(ai.datris.api.PipelineAPIController.vectorDeleteWarnings(full, a, Seq(a, c)).isEmpty)
     }
+
+    test("a Kept warning and a container refusal for a long pgvector name show the name as configured, not the cut form") {
+        val p63 = "kd" + "x" * 61
+        val longSchema = "s" * 63 + "_schema"
+        val a = pgvIn("kd_long_a", "Sales", p63 + "_one", longSchema)
+        val b = pgvIn("kd_long_b", "Sales", p63 + "_two", longSchema)
+        val full = delReq(ResolvedKey(None, "full", Nil, isLegacyFullAccess = true))
+
+        val kept = ai.datris.api.PipelineAPIController.vectorDeleteWarnings(full, a, Seq(a, b))
+        assert(kept.size == 1, kept)
+        assert(kept.head.startsWith("Kept pgvector table " + longSchema + "." + p63 + "_one: "), kept.head)
+        assert(kept.head.contains("kd_long_b"), kept.head)
+
+        val refused = ai.datris.api.PipelineAPIController.vectorContainerRefusal(full, b, null, Seq(a))
+        assert(refused.isDefined)
+        val body = refused.get.getBody
+        assert(body.contains("pgvector table " + longSchema + "." + p63 + "_two is already used"), body)
+        assert(body.contains("kd_long_a"), body)
+
+        // the display key carries the configured names; the identity key the cut ones
+        val k = VectorContainers.keysOf(a).head
+        assert(k.name == p63 && k.schema == "s" * 63)
+        val shown = VectorContainers.displayKey(k, a)
+        assert(shown.name == p63 + "_one" && shown.schema == longSchema)
+        assert(VectorContainers.displayKey(k, pgvIn("n", "Sales", p63 + "_one", null)) == k)
+        // a null schema shows as public, as before
+        val n = pgvIn("kd_null", "Sales", p63 + "_one", null)
+        assert(VectorContainers.displayKey(VectorContainers.keysOf(n).head, n).schema == "public")
+    }
 }

@@ -17,7 +17,11 @@ import java.util.Locale
   * Identity: qdrant, milvus and chroma names compare exactly (loaders pass
   * them through verbatim); weaviate class names case-insensitively (the
   * store capitalises them); pgvector by case-sensitive table plus schema
-  * (null or blank = "public"; identifiers are double-quoted). Different
+  * (null or blank = "public"; identifiers are double-quoted), each compared
+  * as PostgreSQL keeps it: its first 63 UTF-8 bytes, cut on a character
+  * boundary ([[PgIdentifier.kept]]), so two names PostgreSQL cuts to one
+  * table are one container. Messages show the names as configured
+  * ([[displayKey]]), never the cut form. Different
   * stores never collide. A null or blank name has no key. Secret names are
   * not part of the key: there is one store instance per store per
   * environment. */
@@ -39,7 +43,7 @@ object VectorContainers {
                 case "weaviate" => Some(Key(store, "", name.toLowerCase(Locale.ROOT)))
                 case "pgvector" =>
                     val s = schema.filter(!blank(_)).getOrElse("public")
-                    Some(Key(store, s, name))
+                    Some(Key(store, PgIdentifier.kept(s), PgIdentifier.kept(name)))
                 case _ => None
             }
 
@@ -87,18 +91,28 @@ object VectorContainers {
                 .filter(_._2.nonEmpty)
 
     /** `k` for messages only: a weaviate key carries the class name as `c`
-      * wrote it (the key itself is lowercased for identity). Other keys and
-      * a config without that class are returned unchanged. */
-    def displayKey(k: Key, c: PipelineConfig): Key =
-        if (k.store != "weaviate") k
-        else
-            Option(c)
-                .flatMap(x => Option(x.destination))
-                .flatMap(d => Option(d.weaviate))
-                .map(_.className)
-                .filter(n => key("weaviate", n, None).contains(k))
-                .map(n => k.copy(name = n))
-                .getOrElse(k)
+      * wrote it (the key itself is lowercased for identity); a pgvector key
+      * carries the schema and table as `c` wrote them (the key holds what
+      * PostgreSQL keeps of each, which differs for a name over 63 bytes;
+      * a null or blank schema shows as "public"). Other keys and a config
+      * without that container are returned unchanged. */
+    def displayKey(k: Key, c: PipelineConfig): Key = {
+        val d = Option(c).flatMap(x => Option(x.destination))
+        k.store match {
+            case "weaviate" =>
+                d.flatMap(d => Option(d.weaviate))
+                    .map(_.className)
+                    .filter(n => key("weaviate", n, None).contains(k))
+                    .map(n => k.copy(name = n))
+                    .getOrElse(k)
+            case "pgvector" =>
+                d.flatMap(d => Option(d.pgvector))
+                    .filter(p => key("pgvector", p.tableName, Option(p.schemaName)).contains(k))
+                    .map(p => k.copy(schema = Option(p.schemaName).filter(!blank(_)).getOrElse("public"), name = p.tableName))
+                    .getOrElse(k)
+            case _ => k
+        }
+    }
 
     /** Human label, e.g. "pgvector table public.docs", "qdrant collection docs". */
     def label(k: Key): String = k.store match {
