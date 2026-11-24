@@ -733,7 +733,7 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
     }
 
     test("a brace is refused whatever stands between it and the next word") {
-        val gaps = Seq("", " ", "\t", "\n", "\u0001", "\u001B", " ", "　", " ", "​")
+        val gaps = Seq("", " ", "\t", "\n", "\u0001", "\u001B", "\u00a0", "\u3000", "\u2003", "\u200b")
         gaps.foreach { g =>
             braceRefused("SELECT 1 AS a {" + g + "call p(1)}")
             braceRefused("SELECT 1 AS a {" + g + "CALL dbo.p}")
@@ -795,9 +795,9 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
             "SELECT [{call p}], \"{fn x}\" FROM t WHERE c = N'{' OR c = '}'",
             "SELECT * FROM OPENJSON(N'{\"a\": [1, 2]}') AS j",
             // the wide whitespace set around a brace that sits inside quotes
-            "SELECT * FROM t WHERE note = ' {​call　p} '",
+            "SELECT * FROM t WHERE note = '\u00a0{\u200bcall\u3000p}\u2003'",
             "SELECT [\u0001{\u001Bd x}] FROM t",
-            "SELECT \"　{ fn x}\" FROM t WHERE n = N'​{\t?\n= call p}'"
+            "SELECT \"\u3000{\u00a0fn x}\" FROM t WHERE n = N'\u200b{\t?\n=\u2003call p}'"
         ).foreach(accepted)
     }
 
@@ -822,7 +822,7 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
             "[p]",
             "[dbo].[p]",
             "[dbo].[p] 1, N'x'",
-            "p (1)",
+            "p\u00a0(1)",
             "  dbo.p  ",
             "selectp 1",
             "with_p 1",
@@ -931,9 +931,9 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
             "SELECT [a]]{b], \"c\"\"{d\" FROM t",
             "SELECT [{call p}], \"{fn x}\" FROM t WHERE c = N'{' OR c = '}'",
             "SELECT * FROM OPENJSON(N'{\"a\": [1, 2]}') AS j",
-            "SELECT * FROM t WHERE note = ' {​call　p} '",
+            "SELECT * FROM t WHERE note = ' {\u200bcall\u3000p} '",
             "SELECT [\u0001{\u001Bd x}] FROM t",
-            "SELECT \"　{ fn x}\" FROM t WHERE n = N'​{\t?\n= call p}'",
+            "SELECT \"\u3000{ fn x}\" FROM t WHERE n = N'\u200b{\t?\n= call p}'",
             "SELECT * FROM t WHERE doc = '{\"limit\": 5}'",
             "SELECT * FROM t WHERE doc = '{limit:5}'",
             "SELECT * FROM t WHERE doc = '{limit}'",
@@ -960,5 +960,37 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
         Seq("SELECT [a{limit 5}] FROM t", "SELECT a FROM t {limit 5}").foreach { sql =>
             assert(translator(sql) != Right(sql), sql)
         }
+    }
+
+    // ---- ADD: refused as a word, like the other STATEMENT_KEYWORDS ----
+
+    test("the reserved word ADD is refused as a word in any case, after a SELECT or within one") {
+        Seq(
+            "SELECT a FROM t ADD SIGNATURE TO p BY CERTIFICATE c",
+            "SELECT a FROM t add x",
+            "SELECT a FROM t Add x",
+            "SELECT a FROM t aDD x",
+            "SELECT add FROM t",
+            "SELECT a FROM t WHERE add = 1",
+            "SELECT a FROM t\nADD\tx"
+        ).foreach { sql =>
+            assert(refusal(sql) == "Query contains blocked keyword: ADD", sql)
+            assert(problem(sql).contains("Query contains blocked keyword: ADD"), sql)
+        }
+    }
+
+    test("ADD inside a literal or a quoted identifier, and words that only contain it, are accepted") {
+        Seq(
+            "SELECT a FROM t WHERE note = 'add'",
+            "SELECT a FROM t WHERE note = N'ADD x TO y'",
+            "SELECT [add] FROM t",
+            "SELECT [ADD] AS v FROM t",
+            "SELECT \"add\" FROM t",
+            "SELECT \"ADD\" AS v FROM t",
+            "SELECT address FROM t",
+            "SELECT added_at, readd FROM t",
+            "SELECT DATEADD(day, 1, created_at) FROM t",
+            "SELECT dateadd(month, -1, GETDATE()) AS d"
+        ).foreach(accepted)
     }
 }

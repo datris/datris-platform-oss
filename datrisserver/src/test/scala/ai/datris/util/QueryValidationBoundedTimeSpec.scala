@@ -126,7 +126,7 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
         s
     }
 
-    private val NonAsciiLetter = "é"
+    private val NonAsciiLetter = "\u00e9"
 
     // ---- timing ----
 
@@ -184,7 +184,7 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
 
     // Supplementary-plane format characters (Cf): U+E0001 LANGUAGE TAG, U+1D173
     // MUSICAL SYMBOL BEGIN BEAM, U+E0020 TAG SPACE, written as surrogate pairs.
-    private val NonBmpFormat = Seq("󠀁", "𝅳", "󠀠")
+    private val NonBmpFormat = Seq("\udb40\udc01", "\ud834\udd73", "\udb40\udc20")
 
     test("Snowflake: a format character outside the Basic Multilingual Plane before the parenthesis does not hide an IDENTIFIER call") {
         val v = validator("Snowflake")
@@ -218,7 +218,7 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
 
     test("Databricks: a listed name directly after a non-ASCII letter is accepted; the same name in backticks after that letter is refused") {
         val v = validator("Databricks")
-        Seq(NonAsciiLetter, "ß", "ж", "١").foreach { before =>
+        Seq(NonAsciiLetter, "\u00df", "\u0436", "\u0661").foreach { before =>
             Seq("secret('scope', 'key')", "http_request(conn => 'c')", "ai_query('e', 'p')", "identifier('t')").foreach { call =>
                 val plain = "SELECT " + before + call
                 withClue(plain + " -> ")(v(plain))
@@ -236,9 +236,9 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
         Seq(
             "SELECT pg_terminate_backend" + NonAsciiLetter + "(1)",
             "SELECT pg_read_file" + NonAsciiLetter + "('x')",
-            "SELECT * FROM dblink" + "ж" + "('c', 'q')",
+            "SELECT * FROM dblink" + "\u0436" + "('c', 'q')",
             "SELECT pg_create_logical_replication_slot" + NonAsciiLetter + "('s', 'p')",
-            "SELECT lo_export" + "ß" + "(1, '/tmp/x')"
+            "SELECT lo_export" + "\u00df" + "(1, '/tmp/x')"
         ).foreach { sql =>
             val e = intercept[DatrisException](PostgresQueryUtil.validateQuery(sql))
             assert(e.getMessage.startsWith("Query contains blocked function: "), sql + " -> " + e.getMessage)
@@ -295,7 +295,7 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
     // Letters whose upper- or lower-case form is longer than themselves:
     // sharp s, n preceded by apostrophe, iota with dialytika and tonos (upper),
     // capital I with dot above (lower).
-    private val Expanding = Seq("ß", "ŉ", "ΐ", "İ")
+    private val Expanding = Seq("\u00df", "\u0149", "\u0390", "\u0130")
     private val ExpandingRun = 450000
 
     test("a long run of letters whose case form is longer than themselves validates within the bound on all four, and applyLimit too") {
@@ -328,7 +328,7 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
             }
             val s = sb.toString
             assert(QueryTextCase.upper(s) == s.toUpperCase(java.util.Locale.ROOT), s)
-            val sigma = (x: String) => x.replace('ς', 'σ')
+            val sigma = (x: String) => x.replace('\u03c2', '\u03c3')
             assert(sigma(QueryTextCase.lower(s)) == sigma(s.toLowerCase(java.util.Locale.ROOT)), s)
             assert(QueryTextCase.upperPrefix(s, 3) == QueryTextCase.upper(s.substring(0, s.offsetByCodePoints(0, math.min(3, s.codePointCount(0, s.length))))))
         }
@@ -337,9 +337,9 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
     // U+1D400 MATHEMATICAL BOLD CAPITAL A (a letter) and U+1D7CE MATHEMATICAL
     // BOLD DIGIT ZERO (a number), outside the Basic Multilingual Plane, and
     // U+1F600 (an emoji, neither).
-    private val NonBmpLetter = "𝐀"
-    private val NonBmpDigit = "𝟎"
-    private val NonBmpOther = "😀"
+    private val NonBmpLetter = "\ud835\udc00"
+    private val NonBmpDigit = "\ud835\udfce"
+    private val NonBmpOther = "\ud83d\ude00"
 
     test("Databricks: a listed name directly after a letter or number outside the Basic Multilingual Plane is accepted; in backticks it is refused") {
         val v = validator("Databricks")
@@ -382,7 +382,7 @@ class QueryValidationBoundedTimeSpec extends AnyFunSuite {
     // ---- review round 2 ----
 
     // U+0301 COMBINING ACUTE ACCENT.
-    private val CombiningMark = "́"
+    private val CombiningMark = "\u0301"
 
     test("a long run of combining marks validates within the bound on all four") {
         val afterLetter = "SELECT a" + (CombiningMark * ExpandingRun)

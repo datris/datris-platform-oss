@@ -629,40 +629,49 @@ object SnowflakeQueryUtil {
         logger.info("Executing read-only Snowflake query for pipeline '" + pipelineName + "': " + finalSql)
 
         SnowflakeConnectionUtil.withConnection(db) { conn =>
-            val stmt = conn.createStatement()
-            try {
-                stmt.setQueryTimeout(timeoutSeconds(limit))
-                val rs = stmt.executeQuery(finalSql)
-                try {
-                    val metaData = rs.getMetaData
-                    val columnCount = metaData.getColumnCount
+            run(conn, finalSql, limit)
+        }
+    }
 
-                    val results = new java.util.ArrayList[java.util.Map[String, Any]]()
-                    // Cap SHOW/DESC output at the effective limit too — SHOW has no
-                    // LIMIT clause, but an account with thousands of objects
-                    // shouldn't flood the agent's context.
-                    val maxRows = if (unlimited) Int.MaxValue else effectiveLimit
-                    while (rs.next() && results.size() < maxRows) {
-                        val row = new java.util.LinkedHashMap[String, Any]()
-                        for (i <- 1 to columnCount) {
-                            val columnName = metaData.getColumnLabel(i)
-                            val value = rs.getObject(i) match {
-                                case d: java.sql.Date => d.toString
-                                case t: java.sql.Timestamp => t.toString
-                                case other => other
-                            }
-                            row.put(columnName, value)
+    /** Runs `finalSql` on `conn` under [[timeoutSeconds]] for `limit`
+      * (set before the statement runs, for `limit < 0` too) and reads at
+      * most the effective limit of rows (every row for `limit < 0`). */
+    private[util] def run(conn: java.sql.Connection, finalSql: String, limit: Int): SnowflakeQueryResult = {
+        val unlimited = limit < 0
+        val effectiveLimit = if (unlimited) -1 else if (limit > 0) limit else DEFAULT_LIMIT
+        val stmt = conn.createStatement()
+        try {
+            stmt.setQueryTimeout(timeoutSeconds(limit))
+            val rs = stmt.executeQuery(finalSql)
+            try {
+                val metaData = rs.getMetaData
+                val columnCount = metaData.getColumnCount
+
+                val results = new java.util.ArrayList[java.util.Map[String, Any]]()
+                // Cap SHOW/DESC output at the effective limit too — SHOW has no
+                // LIMIT clause, but an account with thousands of objects
+                // shouldn't flood the agent's context.
+                val maxRows = if (unlimited) Int.MaxValue else effectiveLimit
+                while (rs.next() && results.size() < maxRows) {
+                    val row = new java.util.LinkedHashMap[String, Any]()
+                    for (i <- 1 to columnCount) {
+                        val columnName = metaData.getColumnLabel(i)
+                        val value = rs.getObject(i) match {
+                            case d: java.sql.Date => d.toString
+                            case t: java.sql.Timestamp => t.toString
+                            case other => other
                         }
-                        results.add(row)
+                        row.put(columnName, value)
                     }
-                    logger.info("Snowflake query returned " + results.size() + " rows")
-                    SnowflakeQueryResult(finalSql, results)
-                } finally {
-                    Try(rs.close())
+                    results.add(row)
                 }
+                logger.info("Snowflake query returned " + results.size() + " rows")
+                SnowflakeQueryResult(finalSql, results)
             } finally {
-                Try(stmt.close())
+                Try(rs.close())
             }
+        } finally {
+            Try(stmt.close())
         }
     }
 

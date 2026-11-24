@@ -105,7 +105,10 @@ object SqlServerQueryUtil {
         "RETURN",
         "BREAK",
         "CONTINUE",
-        "READTEXT"
+        "READTEXT",
+        // ADD only continues an ALTER statement; a column named `add` needs
+        // brackets or double quotes.
+        "ADD"
     )
 
     private val OneStatementOnly = "Only one statement is allowed in a query"
