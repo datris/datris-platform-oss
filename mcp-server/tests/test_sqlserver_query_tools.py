@@ -116,3 +116,13 @@ def test_query_sqlserver_description_says_brace_escapes_are_refused():
     # the plain rewrites: the date as a string, the T-SQL function
     assert "date" in sentence and "string" in sentence, sentence
     assert "t-sql function" in sentence, sentence
+
+
+def test_query_sqlserver_description_says_limit_escape_text_is_refused():
+    desc = _tool("query_sqlserver").description
+    sentences = [s for s in desc.replace("\n", " ").split(". ") if "{limit" in s.lower()]
+    assert sentences, "query_sqlserver description does not mention the {limit ...} text"
+    sentence = sentences[0].lower()
+    assert "not allowed anywhere" in sentence, sentence
+    assert "string" in sentence and "quoted name" in sentence, sentence
+    assert "limit parameter" in sentence, sentence

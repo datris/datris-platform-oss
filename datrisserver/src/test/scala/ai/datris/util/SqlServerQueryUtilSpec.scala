@@ -946,14 +946,14 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
         )
         acceptedShapes.foreach(sql => assert(isAccepted(sql), sql))
         refusedShapes.foreach(sql => assert(!isAccepted(sql), sql))
-        // Every text that could be sent: as given, and as the limit step
-        // rewrites it for a positive limit (limit -1 sends it as given).
-        (acceptedShapes ++ refusedShapes).foreach { sql =>
-            Seq(sql, SqlServerQueryUtil.applyLimit(sql, 1), SqlServerQueryUtil.applyLimit(sql, 100))
-                .filter(isAccepted)
-                .foreach { text =>
-                    assert(translator(text) == Right(text), text + " -> " + translator(text))
-                }
+        // Every text that could be sent for an accepted query: as given
+        // (limit -1) and, unfiltered, as the limit step rewrites it for a
+        // positive limit, since `query` sends that text without validating it
+        // again.
+        (acceptedShapes ++ refusedShapes).filter(isAccepted).foreach { sql =>
+            Seq(sql, SqlServerQueryUtil.applyLimit(sql, 1), SqlServerQueryUtil.applyLimit(sql, 100)).foreach { text =>
+                assert(translator(text) == Right(text), text + " -> " + translator(text))
+            }
         }
         // The translator is live: it does rewrite the limit escape shapes,
         // which is why they are refused.
