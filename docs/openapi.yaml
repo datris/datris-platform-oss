@@ -4203,7 +4203,7 @@ paths:
                 sql:
                   type: string
                   maxLength: 1000000
-                  description: "SQL query to execute. Omit to select everything from the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
+                  description: "SQL query to execute: one read-only statement (SELECT/WITH, SHOW, DESCRIBE); semicolons, comments, calls to blocked functions (such as `http_request`, `ai_*`, `secret` and `read_files`; `Query contains blocked function: <name>`) and reads from a file path in place of a table (`Queries cannot read from a file path; name a table instead`) are refused, string literals included. Omit to select everything from the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                 limit:
                   type: integer
                   default: 100
