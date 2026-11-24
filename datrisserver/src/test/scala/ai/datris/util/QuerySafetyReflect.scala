@@ -56,6 +56,16 @@ private[util] object QuerySafetyReflect {
         }
     }
 
+    /** The Scala `object` named `name` (fully qualified), for an object a
+      * story adds (plans/stories/query-validation-bounded-time.md adds
+      * `QueryTextLimit`). A missing object fails the test that needs it. */
+    def scalaObject(name: String): AnyRef =
+        try Class.forName(name + "$").getField("MODULE$").get(null)
+        catch {
+            case _: ClassNotFoundException | _: NoSuchFieldException =>
+                throw new AssertionError("no object " + name + " (added by the story)")
+        }
+
     /** The timeout (seconds) the object chooses for a query `limit`. Looks for
       * the Postgres-shaped seam `timeoutSeconds(limit: Int): Int`, else any
       * `(Int): Int` member whose name mentions a timeout. */
