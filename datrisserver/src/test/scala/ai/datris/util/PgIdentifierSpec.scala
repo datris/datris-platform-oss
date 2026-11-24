@@ -81,9 +81,9 @@ class PgIdentifierSpec extends AnyFunSuite {
     private def bytes(s: String): Int = s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
 
     // two-byte, three-byte and four-byte (surrogate pair) letters
-    private val eAcute = "é"
-    private val euro = "€"
-    private val smiley = "😀"
+    private val eAcute = "\u00e9"
+    private val euro = "\u20ac"
+    private val smiley = "\ud83d\ude00"
 
     test("kept returns a name of 63 bytes or fewer unchanged; a 64-byte ASCII name loses its last byte") {
         val short = Seq("a", "documents", "My Docs", "a" * 62, "a" * 63, euro * 21, "a" * 61 + eAcute, "a" * 59 + smiley, eAcute * 31 + "a")

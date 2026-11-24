@@ -317,4 +317,50 @@ class SharedDatasetsSpec extends AnyFunSuite {
         // a null config lists nothing
         assert(SharedDatasets.sharedOnDelete(null, others, env).isEmpty)
     }
+
+    // ------------------------------------------------------------------------
+    // Story: pgvector: two table names that PostgreSQL cuts to the same 63
+    // bytes are treated as one table (review follow-up). A Postgres
+    // destination table and a pgvector table compare each name as PostgreSQL
+    // keeps it (the first 63 UTF-8 bytes), so a stored over-long pgvector
+    // table that PostgreSQL cuts to a Postgres destination table is shared.
+
+    test("a stored long pgvector table cut to a Postgres destination table is shared on delete both ways and is a hidden-writer conflict") {
+        def names(r: Seq[(Key, Seq[PipelineConfig])]): Set[String] = r.flatMap(_._2.map(_.name)).toSet
+        val t63 = "t" * 63
+        val vec = pgv("cut_vec", t63 + "_one", "public")
+        val tbl = pgT("cut_tbl", "datris", "public", t63)
+
+        // the reviewer's pair: shared both ways
+        assert(same(vec, tbl) && same(tbl, vec))
+        assert(names(SharedDatasets.sharedOnDelete(vec, Seq(tbl), env)) == Set("cut_tbl"))
+        assert(names(SharedDatasets.sharedOnDelete(tbl, Seq(vec), env)) == Set("cut_vec"))
+        // and a hidden writer of the same table
+        assert(SharedDatasets.hiddenWriterConflicts(tbl, null, Seq(vec), _ => false, env).nonEmpty)
+        assert(SharedDatasets.hiddenWriterConflicts(vec, null, Seq(tbl), _ => false, env).nonEmpty)
+        // a long schema is cut the same way
+        val longSchema = pgv("cut_vec_s", "docs", "s" * 63 + "_x")
+        assert(same(longSchema, pgT("cut_tbl_s", "datris", "s" * 63, "docs")))
+        // a two-byte letter straddling byte 63 is dropped whole
+        assert(same(pgv("cut_vec_e", "t" * 62 + "\u00e9", "public"), pgT("cut_tbl_e", "datris", "public", "t" * 62)))
+
+        // differing within 63 bytes: not shared, no conflict
+        val other = pgT("cut_tbl_2", "datris", "public", "t" * 62 + "u")
+        assert(!same(vec, other))
+        assert(SharedDatasets.sharedOnDelete(vec, Seq(other), env).isEmpty)
+        assert(SharedDatasets.sharedOnDelete(other, Seq(vec), env).isEmpty)
+        assert(SharedDatasets.hiddenWriterConflicts(other, null, Seq(vec), _ => false, env).isEmpty)
+        // another database still never matches a known pgvector database
+        assert(!same(vec, pgT("cut_tbl_db", "otherdb", "public", t63)))
+
+        // names of 63 bytes or fewer behave as before
+        assert(same(pgv("v", "docs", "public"), pgT("t", "datris", "public", "docs")))
+        assert(!same(pgv("v", "docs", "public"), pgT("t", "datris", "public", "docs2")))
+        assert(!same(pgT("a", "datris", "public", "Docs"), pgT("b", "datris", "public", "docs")))
+        assert(same(pgT("a", "datris", "public", t63), pgT("b", "datris", null, t63)))
+
+        // keys and labels keep the configured names
+        assert(onlyKey(vec).parts.last == t63 + "_one")
+        assert(SharedDatasets.label(onlyKey(vec)) == "pgvector table public." + t63 + "_one")
+    }
 }

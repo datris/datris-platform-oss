@@ -75,7 +75,7 @@ class PGVectorLoaderNamesSpec extends AnyFunSuite {
         assert(exact.isDefined && exact.get.contains(p63 + "x"), exact)
 
         // a two-byte letter straddling byte 63: PostgreSQL keeps the 62-byte prefix
-        val straddle = p62 + "é" + "_x"
+        val straddle = p62 + "\u00e9" + "_x"
         val s = check(Seq(p62, straddle))
         assert(s.isDefined, "a key cut on the character boundary to another key was accepted")
         assert(s.get.contains(straddle) && s.get.contains(p62), s.get)

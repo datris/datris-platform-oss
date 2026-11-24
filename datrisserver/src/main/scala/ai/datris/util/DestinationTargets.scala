@@ -203,6 +203,24 @@ object DestinationTargets {
         names(candidate).isDefined && names(candidate) == names(stored)
     }
 
+    /** True when `stored` has a pgvector destination with exactly the
+      * candidate's `tableName` and the same effective schema
+      * (`PGVectorSql.schemaOf`: null and "public" are one schema, as the
+      * loader addresses them; any other text, spaces included, is the
+      * schema of that name): the
+      * grandfathering of the length rule ([[longVectorTableName]]), so a
+      * stored over-long pipeline saved again from the UI (which always sends
+      * a schema) is accepted. The other pgvector name rules keep the exact
+      * comparison of [[sameVectorTableNames]]. */
+    def sameVectorTable(candidate: PipelineConfig, stored: PipelineConfig): Boolean = {
+        def names(c: PipelineConfig): Option[(String, String)] =
+            Option(c)
+                .flatMap(x => Option(x.destination))
+                .flatMap(d => Option(d.pgvector))
+                .map(p => (PGVectorSql.schemaOf(p), p.tableName))
+        names(candidate).isDefined && names(candidate) == names(stored)
+    }
+
     /** 400 refusal text for [[blankVectorTableName]]; names nothing. */
     val BlankVectorTableRefusal: String = "A pgvector destination needs a table name. Set destination.pgvector.tableName."
 

@@ -17,7 +17,10 @@ import java.nio.charset.StandardCharsets
   *
   * PostgreSQL keeps only the first [[MaxBytes]] UTF-8 bytes of a name
   * (quoted or not) and silently cuts the rest; [[kept]] is the name it
-  * actually uses. */
+  * actually uses. The count is in UTF-8 bytes, which assumes the database
+  * encoding is UTF8 (the bundled database's): PostgreSQL cuts in the
+  * database encoding, so in a single-byte encoding such as LATIN1 it keeps
+  * a name with non-ASCII letters that [[kept]] cuts. */
 object PgIdentifier {
 
     /** PostgreSQL's identifier limit (NAMEDATALEN - 1), in UTF-8 bytes. */

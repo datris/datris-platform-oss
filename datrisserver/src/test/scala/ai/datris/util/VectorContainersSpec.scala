@@ -235,8 +235,8 @@ class VectorContainersSpec extends AnyFunSuite {
 
     private val p63 = "v" * 63
     private val p62 = "v" * 62
-    private val eAcute = "é"
-    private val eGrave = "è"
+    private val eAcute = "\u00e9"
+    private val eGrave = "\u00e8"
 
     private def pgKey(table: String, schema: Option[String] = None) = VectorContainers.key("pgvector", table, schema)
 

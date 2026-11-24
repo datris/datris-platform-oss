@@ -283,7 +283,7 @@ class PipelineDeletePlanSpec extends AnyFunSuite {
 
         // a two-byte letter straddling byte 63: PostgreSQL keeps the 62-byte prefix
         val p62 = "kd" + "x" * 60
-        val s1 = pgvIn("kd_straddle", "Sales", p62 + "é", "public")
+        val s1 = pgvIn("kd_straddle", "Sales", p62 + "\u00e9", "public")
         val s2 = pgvIn("kd_exact62", "Sales", p62, "public")
         assert(tableKept(s1, Seq(s1, s2)) && tableKept(s2, Seq(s1, s2)))
         assert(ai.datris.api.PipelineAPIController.vectorDeleteWarnings(full, s1, Seq(s1, s2)).exists(_.contains("kd_exact62")))

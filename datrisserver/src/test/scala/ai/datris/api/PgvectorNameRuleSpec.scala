@@ -253,8 +253,8 @@ class PgvectorNameRuleSpec extends AnyFunSuite {
             java.nio.charset.StandardCharsets.UTF_8
         )
 
-    private val eAcute = "é"
-    private val euro = "€"
+    private val eAcute = "\u00e9"
+    private val euro = "\u20ac"
 
     // (schema, table) pairs with a schema or a table over 63 bytes
     private val longNames: Seq[(String, String)] = Seq(
@@ -323,7 +323,28 @@ class PgvectorNameRuleSpec extends AnyFunSuite {
         assertRefused(rule(pgv("v", "docs", schema = "s" * 80), pgv("v", "docs", schema = "s" * 70)), LongText, "other long schema")
         // keeping the long table but changing the schema: refused
         assertRefused(rule(pgv("v", "t" * 70, schema = "vec"), pgv("v", "t" * 70, schema = "public")), LongText, "long table, schema changed")
-        assertRefused(rule(pgv("v", "t" * 70, schema = null), pgv("v", "t" * 70, schema = "public")), LongText, "long table, null schema")
+        assert(rule(pgv("v", "t" * 70, schema = null), pgv("v", "t" * 70, schema = "public")).isEmpty, "long table, null schema")
+        // the length rule's grandfathering compares the effective schema (a
+        // null schema is "public", as the loader addresses it): the UI always
+        // sends a schema, so a stored long table saved with none stays editable
+        assert(rule(pgv("v", "t" * 70, schema = "public"), pgv("v", "t" * 70, schema = null)).isEmpty, "stored null schema saved as public")
+        assert(
+            rule(pgv("v", "t" * 70, schema = "public").copy(tags = java.util.Arrays.asList("edited")), pgv("v", "t" * 70, schema = null)).isEmpty,
+            "stored null schema, other fields edited"
+        )
+        assert(rule(pgv("v", "docs", schema = "s" * 70), pgv("v", "docs", schema = "s" * 70)).isEmpty, "long schema unchanged")
+        // a different schema with the same long table is another table: refused
+        assertRefused(rule(pgv("v", "t" * 70, schema = "vec"), pgv("v", "t" * 70, schema = null)), LongText, "stored null schema, schema changed")
+        assertRefused(rule(pgv("v", "t" * 70, schema = " "), pgv("v", "t" * 70, schema = null)), LongText, "stored null schema, spaces schema")
+        // the same through version restore, for every caller
+        for ((who, r) <- callers) {
+            for (out <- restore(r, pgv("v", "t" * 70, schema = "public").copy(version = 2), pgv("v", "t" * 70, schema = null)))
+                assert(out.isEmpty, who + " restore public over null")
+            for (out <- restore(r, pgv("v", "t" * 70, schema = null).copy(version = 2), pgv("v", "t" * 70, schema = "public")))
+                assert(out.isEmpty, who + " restore null over public")
+            for (out <- restore(r, pgv("v", "t" * 70, schema = "vec").copy(version = 2), pgv("v", "t" * 70, schema = null)))
+                assertRefused(out, LongText, who + " restore other schema over null")
+        }
         // changing a long name to a short one: accepted
         assert(rule(pgv("v", "docs"), pgv("v", "t" * 70)).isEmpty)
 

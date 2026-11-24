@@ -2051,7 +2051,8 @@ paths:
             must each be at most 63 bytes, the PostgreSQL limit for a name.`
             (the pgvector rules apply to every caller and are skipped when
             the saved pipeline already has exactly that schema and table
-            name). Fix the configuration and save
+            name; for the 63-byte rule a missing schema and `public` are the
+            same). Fix the configuration and save
             again.
           content:
             application/json:
