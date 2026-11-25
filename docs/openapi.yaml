@@ -2046,9 +2046,13 @@ paths:
             schema must not be empty. Choose plain names.`, or a pgvector
             destination with a missing or blank `tableName`: `A pgvector
             destination needs a table name. Set
-            destination.pgvector.tableName.` (both pgvector rules apply to
-            every caller and are skipped when the saved pipeline already has
-            exactly that schema and table name). Fix the configuration and save
+            destination.pgvector.tableName.`, or a pgvector schema or table
+            name over 63 UTF-8 bytes: `The pgvector schema and table names
+            must each be at most 63 bytes, the PostgreSQL limit for a name.`
+            (the pgvector rules apply to every caller and are skipped when
+            the saved pipeline already has exactly that schema and table
+            name; for the 63-byte rule a missing schema and `public` are the
+            same). Fix the configuration and save
             again.
           content:
             application/json:
@@ -3941,7 +3945,8 @@ paths:
               properties:
                 sql:
                   type: string
-                  description: SQL SELECT query to execute
+                  maxLength: 1000000
+                  description: "SQL SELECT query to execute. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                   example: "SELECT * FROM test.stock_price WHERE volume > 1000000"
                 database:
                   type: string
@@ -3992,7 +3997,7 @@ paths:
                 limit:
                   type: integer
                   default: 20
-                  description: Maximum documents to return. Use -1 for unlimited (no row cap).
+                  description: Maximum documents to return. Use -1 for unlimited (no document-count cap). The query runs under a 30-second time limit, 300 seconds with -1, and a result larger than the size ceiling (32 MB of JSON text by default, `DATRIS_QUERY_MAX_RESULT_MB`, 0 = none) is refused with 400, never cut short. To read a large collection, split the read into disjoint ranges with a filter (for example ranges of `_id` or of a timestamp); there is no sort, so a positive limit is a guard on each call, not a way to page.
       responses:
         '200':
           description: Query results
@@ -4001,7 +4006,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
         '400':
-          description: '`limit` is not an integer, or the database or collection is not a data collection (body `{"error": "This database or collection is not available for queries."}`). Body: `{"error": ...}`'
+          description: '`limit` is not an integer, the database or collection is not a data collection (body `{"error": "This database or collection is not available for queries."}`), the query did not finish within its time limit (`The query did not finish within its time limit of 30 seconds; split the read into ranges with a filter (a positive limit on each call is only a guard).`, 300 seconds with `limit: -1`), or the result is larger than the size ceiling (`The result is larger than 32 MB; split the read into ranges with a filter (a positive limit on each call is only a guard).`). Body: `{"error": ...}`'
         '500':
           description: 'A filter or projection holding $where, $function or $accumulator (message `MongoDB filter contains blocked operator: $where`, or `projection`), an empty collection name, or any other error. Body: `{"error": ...}`'
 
@@ -4083,11 +4088,12 @@ paths:
                   description: Name of a pipeline with a Snowflake destination
                 sql:
                   type: string
-                  description: SQL query to execute. Omit to select everything from the pipeline's destination table.
+                  maxLength: 1000000
+                  description: "SQL query to execute: one read-only statement (SELECT/WITH, SHOW, DESCRIBE); semicolons and the `->>` flow operator are refused (`Chained statements are not allowed in queries (the ->> operator)`), string literals included. Omit to select everything from the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                 limit:
                   type: integer
                   default: 100
-                  description: Maximum rows to return
+                  description: Maximum rows to return. Pass -1 for unlimited; the query then runs under a 5-minute (300-second) time limit instead of 30 seconds.
       responses:
         '200':
           description: Query results including the SQL that was executed
@@ -4140,11 +4146,12 @@ paths:
                   description: Name of a pipeline with a SQL Server destination
                 sql:
                   type: string
-                  description: Read-only T-SQL to execute (SELECT or WITH, no semicolons or comments). Omit to preview the pipeline's destination table.
+                  maxLength: 1000000
+                  description: "Read-only T-SQL to execute (SELECT or WITH, no semicolons, comments or brace escapes; the text `{limit ...}` is refused even inside a string or quoted name, use `limit`). Omit to preview the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                 limit:
                   type: integer
                   default: 100
-                  description: Maximum rows to return. 0 means the default; there is no upper bound. Pass -1 for unlimited (also disables the 30-second query timeout).
+                  description: Maximum rows to return. 0 means the default; there is no upper bound. Pass -1 for unlimited; the query then runs under a 5-minute (300-second) time limit instead of 30 seconds.
       responses:
         '200':
           description: Query results including the SQL that was executed
@@ -4199,11 +4206,12 @@ paths:
                   description: Name of a pipeline with a Databricks destination
                 sql:
                   type: string
-                  description: SQL query to execute. Omit to select everything from the pipeline's destination table.
+                  maxLength: 1000000
+                  description: "SQL query to execute: one read-only statement (SELECT/WITH, SHOW, DESCRIBE); semicolons, comments, calls to blocked functions (such as `http_request`, `ai_*`, `secret` and `read_files`; `Query contains blocked function: <name>`) and reads from a file path in place of a table (`Queries cannot read from a file path; name a table instead`) are refused, string literals included. Omit to select everything from the pipeline's destination table. Text longer than 1,000,000 characters is refused (`Query text is too long: <n> characters (the limit is 1000000)`)."
                 limit:
                   type: integer
                   default: 100
-                  description: Maximum rows to return
+                  description: Maximum rows to return. Pass -1 for unlimited; the query then runs under a 5-minute (300-second) time limit instead of 30 seconds.
       responses:
         '200':
           description: Query results including the SQL that was executed
@@ -6558,7 +6566,7 @@ paths:
         '403':
           description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope. Restoring a version of a deleted pipeline re-creates it, so every key also needs `pipeline:create` in scope on the pipeline as re-created (the version's catalog and the version's owner, which the re-created pipeline keeps), as `POST /api/v1/pipeline` requires for a new pipeline; a key without it, including one holding `pipeline:update` and no `pipeline:create` at all, gets the 403 naming `pipeline:create`. Restoring over a live pipeline needs no `pipeline:create`.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection, Weaviate class or object-store prefix that already exists, or a new or changed vector-store collection or class name that is not plain or is missing, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`), or (every caller) a pgvector schema or table name the live pipeline does not have exactly and that holds a double quote, an empty schema or no table name (`The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names.` or `A pgvector destination needs a table name. Set destination.pgvector.tableName.`), or (every caller) a new or changed `destination.database` section that fails the save rule of `POST /api/v1/pipeline` (allowed characters, required fields, one engine, no `;` in options, 63 bytes for Postgres names), with the same message, or (every caller) a new or changed source or destination field type that is not one of the accepted forms of `POST /api/v1/pipeline` (`Invalid field type passed: ...` naming the field), or the version fails validation, with the same message as `POST /api/v1/pipeline` (for example a table name that is not a plain identifier, a server-managed secret, two destination engines, or Postgres not reachable). Nothing is restored. Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection, Weaviate class or object-store prefix that already exists, or a new or changed vector-store collection or class name that is not plain or is missing, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`), or (every caller) a pgvector schema or table name the live pipeline does not have exactly and that holds a double quote, an empty schema, no table name or more than 63 UTF-8 bytes (`The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names.` or `A pgvector destination needs a table name. Set destination.pgvector.tableName.` or `The pgvector schema and table names must each be at most 63 bytes, the PostgreSQL limit for a name.`), or (every caller) a new or changed `destination.database` section that fails the save rule of `POST /api/v1/pipeline` (allowed characters, required fields, one engine, no `;` in options, 63 bytes for Postgres names), with the same message, or (every caller) a new or changed source or destination field type that is not one of the accepted forms of `POST /api/v1/pipeline` (`Invalid field type passed: ...` naming the field), or the version fails validation, with the same message as `POST /api/v1/pipeline` (for example a table name that is not a plain identifier, a server-managed secret, two destination engines, or Postgres not reachable). Nothing is restored. Body: `{"error": "..."}`.'
         '409':
           description: 'The pipeline was created, deleted, renamed or moved while the restore was being checked: `Pipeline ''<name>'' changed while it was being restored; nothing was restored. Try again.` Body: `{"error": "..."}`.'
         '500':

@@ -150,7 +150,10 @@ object DestSchemaApply {
                 if (!postgresTableExists(config)) return None
                 val db = config.destination.database
                 val sql = PostgresSql.sampleSelect(db.schema, db.table)
-                PostgresQueryUtil.query(sql, postgresDbName(config), limit).asScala.map(_.asScala.toMap).toSeq
+                // Read with the login read-back queries use (landedReadRefusal).
+                landedReadRefusal(db.schema, db.table) {
+                    PostgresQueryUtil.query(sql, postgresDbName(config), limit).asScala.map(_.asScala.toMap).toSeq
+                }
             case "snowflake" =>
                 val exists = SnowflakeConnectionUtil.withConnection(config.destination.database) { conn =>
                     val statement = conn.createStatement()
@@ -287,6 +290,23 @@ object DestSchemaApply {
     // ------------------------------------------------------------------
     // Postgres: in-place ALTER, one transaction.
     // ------------------------------------------------------------------
+
+    /** PostgreSQL's SQLSTATE for "permission denied" (insufficient_privilege). */
+    private val PostgresInsufficientPrivilege = "42501"
+
+    /** `read`, the landed-row sample of `schema.table`. When the Postgres
+      * secret names a separate query login and PostgreSQL denies it the
+      * table, a plain sentence (DatrisException) replaces the driver's error.
+      * Without a query login every failure is passed on unchanged. */
+    private[util] def landedReadRefusal[T](schema: String, table: String)(read: => T): T =
+        try read
+        catch {
+            case e: java.sql.SQLException if e.getSQLState == PostgresInsufficientPrivilege && PostgresQueryUtil.queryLoginInUse() =>
+                throw new DatrisException(
+                    "The PostgreSQL login Datris uses for queries has no permission to read " + schema + "." + table +
+                        ". Grant it USAGE on the schema and SELECT on the table: see \"Separate query login\" in the PostgreSQL destination docs."
+                )
+        }
 
     private def postgresDbName(config: PipelineConfig): String =
         if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment

@@ -31,7 +31,7 @@ object IngestColumnNames {
     /** Length rules for the configured destination. Built by [[limitsFor]]. */
     final case class Limits(maxBytes: Option[Int], maxChars: Option[Int], postgresPrefix: Boolean, orcNoBacktick: Boolean = false)
 
-    private val PostgresMaxBytes = 63
+    private val PostgresMaxBytes = PgIdentifier.MaxBytes
     private val SqlServerMaxChars = 128
     private val SnowflakeDatabricksMaxChars = 255
     private val DisplayMaxChars = 80
@@ -130,20 +130,6 @@ object IngestColumnNames {
     private def key(name: String): String = name.trim.toLowerCase
 
     /** The first `max` UTF-8 bytes of `name`, cut on a character boundary, as
-      * Postgres truncates an over-long identifier. */
-    private def clipBytes(name: String, max: Int): String = {
-        var bytes = 0
-        var i = 0
-        var done = false
-        while (i < name.length && !done) {
-            val cp = name.codePointAt(i)
-            val n = new String(Character.toChars(cp)).getBytes(StandardCharsets.UTF_8).length
-            if (bytes + n > max) done = true
-            else {
-                bytes += n
-                i += Character.charCount(cp)
-            }
-        }
-        name.substring(0, i)
-    }
+      * Postgres truncates an over-long identifier ([[PgIdentifier.keptBytes]]). */
+    private def clipBytes(name: String, max: Int): String = PgIdentifier.keptBytes(name, max)
 }

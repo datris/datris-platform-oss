@@ -24,8 +24,15 @@ object SqlServerQueryUtil {
     private val DEFAULT_LIMIT = 100
 
     // Bounds a hung request thread and runaway load on the customer's server.
-    // Not applied when the caller explicitly asks for unlimited (limit < 0).
+    // A bounded query gets QUERY_TIMEOUT_SECONDS; `limit < 0` (every row) gets
+    // UNLIMITED_QUERY_TIMEOUT_SECONDS, the Postgres value.
     private val QUERY_TIMEOUT_SECONDS = 30
+    private[util] val UNLIMITED_QUERY_TIMEOUT_SECONDS = 300
+
+    /** The timeout a query runs under: [[QUERY_TIMEOUT_SECONDS]] for a
+      * bounded query, [[UNLIMITED_QUERY_TIMEOUT_SECONDS]] for `limit < 0`. */
+    private[util] def timeoutSeconds(limit: Int): Int =
+        if (limit < 0) UNLIMITED_QUERY_TIMEOUT_SECONDS else QUERY_TIMEOUT_SECONDS
 
     // Write/DDL/exec verbs, ad hoc remote-server access (OPENROWSET,
     // OPENDATASOURCE, OPENQUERY) and statements that change the session. INTO
@@ -62,14 +69,60 @@ object SqlServerQueryUtil {
         "RECONFIGURE",
         "WAITFOR",
         "DECLARE",
-        // T-SQL needs no `;` between statements, so `SELECT 1 DISABLE TRIGGER ...`
-        // is two statements: block the verbs that could ride along that way.
+        // T-SQL needs no `;` between statements. These verbs were the first
+        // attempt at stopping a second statement word by word; they stay, but
+        // the one-statement scan in [[singleStatementProblem]] and the
+        // rolled-back transaction in [[run]] are what bound it now.
         "TRIGGER",
         "SETUSER",
         "REVERT",
         "WRITETEXT",
         "UPDATETEXT"
     )
+
+    /** Reserved T-SQL words that only start or steer a statement of their
+      * own (control flow, transactions, cursors, session settings). Refused
+      * outside string literals and quoted identifiers; being reserved, none can
+      * be an unquoted column name. Not here on purpose: `END` (every `CASE`
+      * has one), `FETCH` (`OFFSET ... FETCH`), and the non-reserved `THROW`,
+      * `RECEIVE`, `SEND`, `GET`, `MOVE`, which are legal column names; the
+      * one-statement scan and the rollback cover those. */
+    private[util] val STATEMENT_KEYWORDS: Seq[String] = Seq(
+        "SET",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "SAVE",
+        "WHILE",
+        "IF",
+        "GOTO",
+        "PRINT",
+        "RAISERROR",
+        "CHECKPOINT",
+        "OPEN",
+        "CLOSE",
+        "DEALLOCATE",
+        "RETURN",
+        "BREAK",
+        "CONTINUE",
+        "READTEXT",
+        // ADD only continues an ALTER statement; a column named `add` needs
+        // brackets or double quotes.
+        "ADD"
+    )
+
+    private val OneStatementOnly = "Only one statement is allowed in a query"
+
+    private val BraceRule =
+        "Curly braces are not allowed in queries outside string literals; " +
+            "write dates as '2024-01-31' and use T-SQL function names instead of {d ...} and {fn ...}"
+
+    private[util] val LimitEscapeRule =
+        "The text {limit ...} is not allowed anywhere in a query, even inside a string or a quoted name; " +
+            "use the request's limit instead"
+
+    // Words that may stand right before a second SELECT of the same statement.
+    private val SetOperators = Set("UNION", "EXCEPT", "INTERSECT")
 
     /** SQL Server errors raised when the derived-table wrapper itself is the
      *  problem, not the caller's SQL: 8155 (a result column has no name, e.g.
@@ -83,6 +136,9 @@ object SqlServerQueryUtil {
     /** Run `sql` (or, when None, a preview of the pipeline's destination table)
      *  against the SQL Server database the named pipeline loads into. */
     def query(pipelineName: String, sql: Option[String], limit: Int = DEFAULT_LIMIT): SqlServerQueryResult = {
+        // The length limit counts the caller's text as received, before the
+        // trim below and before the pipeline is read.
+        sql.foreach(QueryTextLimit.check)
         val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
         if (config == null)
             throw new DatrisException("Pipeline not found: " + pipelineName)
@@ -112,31 +168,54 @@ object SqlServerQueryUtil {
         }
     }
 
-    private def run(conn: java.sql.Connection, sql: String, unlimited: Boolean, effectiveLimit: Int): SqlServerQueryResult = {
-        val stmt = conn.createStatement()
+    /** Runs `sql` with autocommit off and always rolls the transaction back,
+      * on success and on failure, so anything transactional a statement did is
+      * undone; never commits. The statement runs under [[timeoutSeconds]]
+      * whatever the limit. On success a failed rollback is raised (the undo
+      * cannot be confirmed); after a failure it is attached to that failure.
+      * Autocommit is deliberately not turned back on: doing so with a
+      * transaction still open (a rollback that failed) would commit it. The
+      * connection is closed by `withConnection` straight after, and the
+      * wrapper-error retry calls `run` again, which turns autocommit off
+      * itself. */
+    private[util] def run(conn: java.sql.Connection, sql: String, unlimited: Boolean, effectiveLimit: Int): SqlServerQueryResult = {
+        conn.setAutoCommit(false)
+        var failure: Throwable = null
         try {
-            if (!unlimited) {
-                stmt.setQueryTimeout(QUERY_TIMEOUT_SECONDS)
-                stmt.setMaxRows(effectiveLimit)
-            }
-            val rs = stmt.executeQuery(sql)
+            val stmt = conn.createStatement()
             try {
-                val metaData = rs.getMetaData
-                val columnCount = metaData.getColumnCount
-                val results = new java.util.ArrayList[java.util.Map[String, Any]]()
-                val maxRows = if (unlimited) Int.MaxValue else effectiveLimit
-                while (results.size() < maxRows && rs.next()) {
-                    val row = new java.util.LinkedHashMap[String, Any]()
-                    for (i <- 1 to columnCount) {
-                        val label = Option(metaData.getColumnLabel(i)).filter(_.nonEmpty).getOrElse("column" + i)
-                        row.put(label, jsonValue(rs.getObject(i)))
+                stmt.setQueryTimeout(timeoutSeconds(if (unlimited) -1 else effectiveLimit))
+                if (!unlimited) stmt.setMaxRows(effectiveLimit)
+                val rs = stmt.executeQuery(sql)
+                try {
+                    val metaData = rs.getMetaData
+                    val columnCount = metaData.getColumnCount
+                    val results = new java.util.ArrayList[java.util.Map[String, Any]]()
+                    val maxRows = if (unlimited) Int.MaxValue else effectiveLimit
+                    while (results.size() < maxRows && rs.next()) {
+                        val row = new java.util.LinkedHashMap[String, Any]()
+                        for (i <- 1 to columnCount) {
+                            val label = Option(metaData.getColumnLabel(i)).filter(_.nonEmpty).getOrElse("column" + i)
+                            row.put(label, jsonValue(rs.getObject(i)))
+                        }
+                        results.add(row)
                     }
-                    results.add(row)
-                }
-                logger.info("SQL Server query returned " + results.size() + " rows")
-                SqlServerQueryResult(sql, results)
-            } finally Try(rs.close())
-        } finally Try(stmt.close())
+                    logger.info("SQL Server query returned " + results.size() + " rows")
+                    SqlServerQueryResult(sql, results)
+                } finally Try(rs.close())
+            } finally Try(stmt.close())
+        } catch {
+            case t: Throwable =>
+                failure = t
+                throw t
+        } finally {
+            try conn.rollback()
+            catch {
+                case e: SQLException =>
+                    if (failure != null) failure.addSuppressed(e)
+                    else throw e
+            }
+        }
     }
 
     /** JSON-friendly cell values: temporal and driver-specific types (e.g.
@@ -158,11 +237,13 @@ object SqlServerQueryUtil {
         "SELECT * FROM " + SqlServerConnectionUtil.qualifiedTable(db)
 
     private[util] def validateQuery(sql: String): Unit = {
+        QueryTextLimit.check(sql)
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 
         val normalized = sql.trim.stripSuffix(";").trim
-        val upper = normalized.toUpperCase(Locale.ROOT)
+        // Only the start is tested: upper-case just enough of it (QueryTextCase).
+        val upper = QueryTextCase.upperPrefix(normalized, 16)
         val allowed = startsWithWord(upper, "SELECT") || startsWithWord(upper, "WITH")
         if (!allowed)
             throw new DatrisException(
@@ -178,16 +259,240 @@ object SqlServerQueryUtil {
             throw new DatrisException("SQL comments are not allowed in queries")
 
         BLOCKED_KEYWORDS.foreach { keyword =>
-            val pattern = ("(?i)\\b" + keyword + "\\b").r
-            if (pattern.findFirstIn(normalized).isDefined)
+            // The front boundary is decided in code, not with `\b` (whose
+            // reading of non-ASCII letters differs across JDK versions): a hit
+            // counts unless the character before it continues a name. A
+            // keyword joined to the end of a number is not counted here; the
+            // scan in `singleStatementProblem` refuses a number joined to a word.
+            val pattern = ("(?i)" + keyword + "\\b").r
+            if (pattern.findAllMatchIn(normalized).exists(m => m.start == 0 || !continuesName(normalized.charAt(m.start - 1))))
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
+
+        singleStatementProblem(normalized).foreach(problem => throw new DatrisException(problem))
+
+        // After the scan, so a brace outside quotes keeps the brace rule's message.
+        if (hasLimitEscape(normalized)) throw new DatrisException(LimitEscapeRule)
+    }
+
+    /** Whether `sql` holds, anywhere, quoted or not, an opening brace followed
+      * by optional whitespace, the word `limit` (case-insensitive) and one
+      * whitespace character. Checked against mssql-jdbc 12.8.2 on 2026-11-24
+      * (class files read with javap): on a plain `Statement`, the only rewrite
+      * the driver applies to text that starts with SELECT or WITH is its limit
+      * escape, entered when its pattern `\{\s*limit\s+...` is found anywhere
+      * in the text. That rewrite tracks only single quotes, not `[...]` or
+      * `"..."`, and deletes the escape together with the character in front of
+      * it, so it can change where a quoted name or literal ends and send text
+      * other than the text validated here. This test is a superset of the
+      * driver's gate (its `\s` is the same ASCII set; `regionMatches` with
+      * ignoreCase is wider than its `[lL]...` classes), so the driver never
+      * enters that rewrite. One pass: each whitespace run is skipped once. */
+    private[util] def hasLimitEscape(sql: String): Boolean = {
+        def ws(c: Char): Boolean = c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\f' || c == '\r'
+        val n = sql.length
+        var from = 0
+        while (from < n) {
+            val b = sql.indexOf('{', from)
+            if (b < 0) return false
+            var i = b + 1
+            while (i < n && ws(sql.charAt(i))) i += 1
+            if (i + 5 < n && sql.regionMatches(true, i, "limit", 0, 5) && ws(sql.charAt(i + 5))) return true
+            from = i
+        }
+        false
+    }
+
+    /** Why `sql` is not exactly one read-only statement, or None when it is.
+      * Pure; scans outside `'...'` literals and `[...]` / `"..."` identifiers:
+      *
+      *  - an unterminated literal or quoted identifier is refused;
+      *  - a `)` with no matching `(`, or a `(` never closed, is refused (a stray
+      *    `)` would close the `SELECT TOP (n) * FROM (...)` wrapper);
+      *  - an opening brace `{` is refused (brace escapes such as `{d '...'}`
+      *    and `{fn ...}`); a lone `}` is left to the server;
+      *  - a [[STATEMENT_KEYWORDS]] word, or the phrase `NEXT VALUE FOR`, is
+      *    refused as `Query contains blocked keyword: <WORD>`;
+      *  - within one parenthesis level, a `SELECT` after the first must
+      *    directly follow `UNION`, `UNION ALL`, `EXCEPT` or `INTERSECT`;
+      *    otherwise it starts a second statement.
+      *
+      * Statements cannot sit inside parentheses, so a subquery or a CTE body
+      * starts a fresh level with its own first `SELECT`. */
+    private[util] def singleStatementProblem(sql: String): Option[String] =
+        scan(sql) match {
+            case Left(problem) => Some(problem)
+            case Right(tokens) => blockedWord(tokens).orElse(secondSelect(tokens))
+        }
+
+    private def blockedWord(tokens: Vector[Token]): Option[String] = {
+        val words = tokens.collect { case Word(w, _, _) => QueryTextCase.upper(w) }
+        val word = STATEMENT_KEYWORDS.find(words.contains)
+        // NEXT VALUE FOR: three words in a row, nothing between them.
+        lazy val nextValueFor = tokens.sliding(3).exists {
+            case Seq(Word(a, _, _), Word(b, _, _), Word(c, _, _)) =>
+                a.equalsIgnoreCase("NEXT") && b.equalsIgnoreCase("VALUE") && c.equalsIgnoreCase("FOR")
+            case _ => false
+        }
+        word.orElse(if (nextValueFor) Some("NEXT VALUE FOR") else None).map("Query contains blocked keyword: " + _)
+    }
+
+    /** One frame per parenthesis level: whether a SELECT has been seen at that
+      * level, and the level's last two tokens (for `UNION ALL`). */
+    private final class Level {
+        var sawSelect = false
+        var prev: Token = Other
+        var prevPrev: Token = Other
+        def note(t: Token): Unit = { prevPrev = prev; prev = t }
+        def afterSetOperator: Boolean = (prev, prevPrev) match {
+            // Matched in ASCII only: this is what lets a SELECT through, so a
+            // letter that only Unicode case rules fold to the keyword's (such
+            // as a dotless i) must not count as the keyword.
+            case (Word(p, _, _), _) if SetOperators.contains(asciiUpper(p)) => true
+            case (Word(all, _, _), Word(union, _, _)) => asciiUpper(all) == "ALL" && asciiUpper(union) == "UNION"
+            case _ => false
+        }
+    }
+
+    private def secondSelect(tokens: Vector[Token]): Option[String] = {
+        var levels = List(new Level)
+        val found = tokens.exists {
+            case Open =>
+                levels.head.note(Open)
+                levels = new Level :: levels
+                false
+            case Close =>
+                levels = levels.tail // scan has checked the parentheses balance
+                levels.head.note(Close)
+                false
+            case t @ Word(w, _, _) =>
+                val l = levels.head
+                val second = w.equalsIgnoreCase("SELECT") && l.sawSelect && !l.afterSetOperator
+                if (w.equalsIgnoreCase("SELECT")) l.sawSelect = true
+                l.note(t)
+                second
+            case t =>
+                levels.head.note(t)
+                false
+        }
+        if (found) Some(OneStatementOnly) else None
+    }
+
+    private sealed trait Token
+    private case object Open extends Token
+    private case object Close extends Token
+    private case object Quoted extends Token
+    private case object Other extends Token
+    private final case class Word(text: String, start: Int, depth: Int) extends Token
+
+    /** Tokens of `sql`: words (letters, digits, `_`, starting at a letter,
+      * digit or `_`) with their start offset and parenthesis depth, `(` and
+      * `)`, one token per `'...'` literal or `[...]` / `"..."` identifier, and
+      * one per other character that is not whitespace. Left when a literal or
+      * identifier is unterminated, the parentheses do not balance, or an
+      * opening brace stands outside a literal or identifier. Depth is
+      * reported as it is, never clamped. */
+    private def scan(sql: String): Either[String, Vector[Token]] = {
+        val out = Vector.newBuilder[Token]
+        var depth = 0
+        var i = 0
+        val n = sql.length
+        def skipQuoted(close: Char): Boolean = {
+            i += 1
+            while (i < n) {
+                if (sql.charAt(i) == close) {
+                    if (i + 1 < n && sql.charAt(i + 1) == close) i += 2 // doubled = escaped
+                    else { i += 1; return true }
+                } else i += 1
+            }
+            false
+        }
+        while (i < n) {
+            val c = sql.charAt(i)
+            if (c == '\'' || c == '"' || c == '[') {
+                val close = if (c == '[') ']' else c
+                if (!skipQuoted(close))
+                    return Left("Query has an unterminated string literal or quoted identifier")
+                out += Quoted
+            } else if (c == '(') { depth += 1; i += 1; out += Open }
+            else if (c == ')') {
+                depth -= 1
+                if (depth < 0) return Left("Query has a closing parenthesis with no matching opening one")
+                i += 1
+                out += Close
+            } else if (c.isDigit) {
+                // A number. T-SQL ends it at the first character that cannot
+                // continue it, so a letter right after it starts a new word
+                // (a keyword included): refuse that outright.
+                val start = i
+                if (c == '0' && i + 1 < n && (sql.charAt(i + 1) == 'x' || sql.charAt(i + 1) == 'X')) {
+                    i += 2
+                    while (i < n && isHexDigit(sql.charAt(i))) i += 1
+                } else {
+                    while (i < n && sql.charAt(i).isDigit) i += 1
+                    if (i < n && sql.charAt(i) == '.') { i += 1; while (i < n && sql.charAt(i).isDigit) i += 1 }
+                    if (i < n && (sql.charAt(i) == 'e' || sql.charAt(i) == 'E')) {
+                        val sign = if (i + 1 < n && (sql.charAt(i + 1) == '+' || sql.charAt(i + 1) == '-')) 1 else 0
+                        if (i + 1 + sign < n && sql.charAt(i + 1 + sign).isDigit) {
+                            i += 1 + sign
+                            while (i < n && sql.charAt(i).isDigit) i += 1
+                        }
+                    }
+                }
+                if (i < n && isWordChar(sql.charAt(i)))
+                    return Left("Query has a number joined to a word; put a space between them")
+                out += Word(sql.substring(start, i), start, depth)
+            } else if (c.isLetter || c == '_') {
+                val start = i
+                while (i < n && isWordChar(sql.charAt(i))) i += 1
+                out += Word(sql.substring(start, i), start, depth)
+            } else if (c == '{') {
+                // Brace escapes ({fn ...}, {d '...'} and the rest) are refused
+                // outright (checked 2026-11-24 against mssql-jdbc 12.8.2, the
+                // driver docs and source): the driver passes them to the
+                // server unchanged unless the whole text is a call escape, and
+                // escape processing cannot be turned off (setEscapeProcessing
+                // has no effect). Whether the engine runs a call escape in the
+                // middle of a batch was not checked against a server.
+                return Left(BraceRule)
+            } else {
+                if (!isSeparator(c)) out += Other
+                i += 1
+            }
+        }
+        if (depth != 0) Left("Query has an opening parenthesis that is never closed")
+        else Right(out.result())
     }
 
     private def startsWithWord(upper: String, word: String): Boolean =
         upper.startsWith(word) && (upper.length == word.length || !isWordChar(upper.charAt(word.length)))
 
+    /** Characters the scan treats as whitespace between tokens: space and
+      * every control character (SQL Server reads 0x01-0x20 as whitespace),
+      * Unicode space, line and paragraph separators, and format characters
+      * (zero-width space and the like). Wider than SQL Server's set errs
+      * toward refusing: it can join words into a refused phrase. Where it
+      * instead lets a set operator stand right before a SELECT, a character
+      * the store does not read as whitespace should leave text it rejects
+      * (reasoned, not checked against a server). */
+    private def isSeparator(c: Char): Boolean =
+        c <= ' ' || Character.isSpaceChar(c) || Character.isWhitespace(c) ||
+            Character.getType(c) == Character.CONTROL || Character.getType(c) == Character.FORMAT
+
+    /** `w` in upper case when it is plain ASCII; otherwise unchanged, so it
+      * never equals an ASCII keyword. */
+    private def asciiUpper(w: String): String =
+        if (w.forall(_ < 128)) w.toUpperCase(Locale.ROOT) else w
+
+    private def isHexDigit(c: Char): Boolean = c.isDigit || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+
     private def isWordChar(c: Char): Boolean = c.isLetterOrDigit || c == '_' || c == '@' || c == '#' || c == '$'
+
+    /** Whether `c`, directly in front of a [[BLOCKED_KEYWORDS]] hit, makes the
+      * hit part of a longer name: a letter, a decimal digit or `_`. Read one
+      * UTF-16 unit at a time, so a surrogate half (a letter outside the Basic
+      * Multilingual Plane) does not continue a name and the hit is refused. */
+    private def continuesName(c: Char): Boolean = Character.isLetterOrDigit(c) || c == '_'
 
     /** Cap the rows `sql` returns.
      *
@@ -207,7 +512,7 @@ object SqlServerQueryUtil {
     private[util] def applyLimit(sql: String, limit: Int): String = {
         val normalized = sql.trim.stripSuffix(";").trim
         val words = topLevelWords(normalized)
-        val upperWords = words.map { case (w, _) => w.toUpperCase(Locale.ROOT) }
+        val upperWords = words.map { case (w, _) => QueryTextCase.upper(w) }
         val hasOrderBy = upperWords.sliding(2).exists(p => p.size == 2 && p(0) == "ORDER" && p(1) == "BY")
         val hasOffset = upperWords.contains("OFFSET")
         // TOP in the final statement's select list: before its first top-level FROM.
@@ -227,35 +532,12 @@ object SqlServerQueryUtil {
     }
 
     /** Words (letters, digits, `_`) at parenthesis depth 0, with their start
-     *  offsets, skipping `'...'` literals, `[...]` and `"..."` identifiers. */
-    private def topLevelWords(sql: String): Seq[(String, Int)] = {
-        val out = Seq.newBuilder[(String, Int)]
-        var depth = 0
-        var i = 0
-        val n = sql.length
-        def skipQuoted(close: Char): Unit = {
-            i += 1
-            var done = false
-            while (i < n && !done) {
-                if (sql.charAt(i) == close) {
-                    if (i + 1 < n && sql.charAt(i + 1) == close) i += 2 // doubled = escaped
-                    else { i += 1; done = true }
-                } else i += 1
-            }
+     *  offsets, skipping `'...'` literals, `[...]` and `"..."` identifiers.
+     *  Text that does not scan (unterminated quote, unbalanced parentheses)
+     *  has no words: [[validateQuery]] refuses it before a limit is applied. */
+    private def topLevelWords(sql: String): Seq[(String, Int)] =
+        scan(sql) match {
+            case Right(tokens) => tokens.collect { case Word(w, start, 0) => (w, start) }
+            case Left(_) => Seq.empty
         }
-        while (i < n) {
-            val c = sql.charAt(i)
-            if (c == '\'') skipQuoted('\'')
-            else if (c == '"') skipQuoted('"')
-            else if (c == '[') skipQuoted(']')
-            else if (c == '(') { depth += 1; i += 1 }
-            else if (c == ')') { depth = math.max(0, depth - 1); i += 1 }
-            else if (c.isLetterOrDigit || c == '_') {
-                val start = i
-                while (i < n && isWordChar(sql.charAt(i))) i += 1
-                if (depth == 0) out += ((sql.substring(start, i), start))
-            } else i += 1
-        }
-        out.result()
-    }
 }

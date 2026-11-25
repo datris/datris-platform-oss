@@ -25,7 +25,7 @@ import scala.collection.JavaConverters._
 object DatabaseDestinationNames {
 
     /** PostgreSQL's identifier limit (NAMEDATALEN - 1), in bytes. */
-    val PostgresMaxNameBytes: Int = 63
+    val PostgresMaxNameBytes: Int = PgIdentifier.MaxBytes
 
     /** The first rule `db` fails, as the save validator words it; None for a
       * null block or one that passes. */

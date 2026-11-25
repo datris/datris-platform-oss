@@ -109,6 +109,11 @@ class QueryAPIController {
             case _: MongoDBQueryUtil.DatabaseNotAvailableException =>
                 logger.warn("queryMongoDB: refused a database or collection that is not available for queries")
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(MongoDBQueryUtil.DatabaseNotAvailableMessage))
+            // Only the two bounds answer 400 with their own message; any other
+            // DatrisException (a blocked operator included) keeps the 500.
+            case e @ (_: MongoDBQueryUtil.QueryTimeLimitException | _: MongoDBQueryUtil.ResultTooLargeException) =>
+                logger.warn("queryMongoDB: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))

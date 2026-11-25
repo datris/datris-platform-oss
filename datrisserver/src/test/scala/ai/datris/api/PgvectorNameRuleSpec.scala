@@ -207,4 +207,185 @@ class PgvectorNameRuleSpec extends AnyFunSuite {
             }
         }
     }
+
+    // ------------------------------------------------------------------------
+    // Story: pgvector: two table names that PostgreSQL cuts to the same 63
+    // bytes are treated as one table
+    // (plans/stories/pgvector-long-names-one-table.md), Acceptance, refusal
+    // spec. `vectorTableNameRefusal` adds a length case after the unsafe and
+    // blank cases: a pgvector schema or table over 63 UTF-8 bytes (each on its
+    // own) is 400 `DestinationTargets.LongVectorTableRefusal` for every caller,
+    // skipped when `sameVectorTableNames(candidate, stored)`. Version restore
+    // (`pipelineRestoreRefusal`) and catalog restore (`savePipelineInternal`)
+    // run the same function. `LongVectorTableRefusal` and
+    // `longVectorTableName` are reached by reflection so this file compiles
+    // before they exist.
+
+    private val LongText = "The pgvector schema and table names must each be at most 63 bytes, the PostgreSQL limit for a name."
+
+    private def longRefusalConstant: String =
+        try DestinationTargets.getClass.getMethod("LongVectorTableRefusal").invoke(DestinationTargets).asInstanceOf[String]
+        catch { case _: NoSuchMethodException => throw new AssertionError("DestinationTargets has no LongVectorTableRefusal (added by the story)") }
+
+    private def longVectorTableName(c: PipelineConfig): Boolean = {
+        val m =
+            try DestinationTargets.getClass.getMethod("longVectorTableName", classOf[PipelineConfig])
+            catch {
+                case _: NoSuchMethodException => throw new AssertionError("DestinationTargets has no longVectorTableName(PipelineConfig) (added by the story)")
+            }
+        m.invoke(DestinationTargets, c).asInstanceOf[java.lang.Boolean].booleanValue
+    }
+
+    private def restricted: HttpServletRequest =
+        req(
+            APIKeyValidator.resolveFromSession(
+                User("bob", "h", User.RoleEditor, null, null, null, restricted = true, catalogGrants = ai.datris.util.InMemoryUserDb.grants("Sales" -> "edit"))
+            )
+        )
+
+    private def source(rel: String): String =
+        new String(
+            java.nio.file.Files.readAllBytes(
+                Seq(java.nio.file.Paths.get("src/main/scala/" + rel), java.nio.file.Paths.get("datrisserver/src/main/scala/" + rel))
+                    .find(java.nio.file.Files.exists(_))
+                    .get
+            ),
+            java.nio.charset.StandardCharsets.UTF_8
+        )
+
+    private val eAcute = "\u00e9"
+    private val euro = "\u20ac"
+
+    // (schema, table) pairs with a schema or a table over 63 bytes
+    private val longNames: Seq[(String, String)] = Seq(
+        ("public", "t" * 64),
+        ("public", "t" * 70),
+        ("public", "t" * 63 + "_one"),
+        ("public", "t" * 62 + eAcute), // 64 bytes, 63 characters
+        ("public", eAcute * 32), // 64 bytes, 32 characters
+        ("public", euro * 22),
+        ("s" * 64, "docs"),
+        ("s" * 62 + eAcute, "docs"),
+        ("s" * 64, "t" * 64),
+        (null, "t" * 64)
+    )
+    // at the limit or under it, each on its own
+    private val atLimit: Seq[(String, String)] = Seq(
+        ("public", "t" * 63),
+        ("public", "t" * 61 + eAcute),
+        ("public", euro * 21),
+        ("public", eAcute * 31 + "t"),
+        ("s" * 63, "docs"),
+        ("s" * 63, "t" * 63), // 127 bytes together: each is judged alone
+        (null, "t" * 63)
+    )
+
+    test(
+        "a new or changed pgvector table or schema over 63 bytes is refused with LongVectorTableRefusal for every caller; the same stored names are accepted; a version restore and a catalog restore are refused the same way"
+    ) {
+        // ---- the plain rule (POST /pipeline, every caller: it takes no request)
+        for ((s, t) <- longNames) {
+            val clue = "[" + s + "].[" + t + "]"
+            assertRefused(rule(pgv("v", t, schema = s), null), LongText, clue + " new")
+            assertRefused(rule(pgv("v", t, schema = s), pgv("v", "docs_old")), LongText, clue + " changed from a short name")
+            assertRefused(rule(pgv("v", t, schema = s), pg("v", t)), LongText, clue + " was postgres")
+        }
+        assert(longRefusalConstant == LongText)
+        for ((s, t) <- longNames) assert(longVectorTableName(pgv("v", t, schema = s)), "[" + s + "].[" + t + "]")
+        for ((s, t) <- atLimit) assert(!longVectorTableName(pgv("v", t, schema = s)), "[" + s + "].[" + t + "]")
+        assert(!longVectorTableName(pg("p", "t" * 70)))
+        assert(!longVectorTableName(PipelineConfig(name = "x")))
+        assert(!longVectorTableName(null))
+
+        // at the limit: never refused
+        for ((s, t) <- atLimit) {
+            val clue = "[" + s + "].[" + t + "]"
+            assert(rule(pgv("v", t, schema = s), null).isEmpty, clue + " new")
+            assert(rule(pgv("v", t, schema = s), pgv("v", "t" * 70)).isEmpty, clue + " away from a long name")
+        }
+
+        // the unsafe and blank cases come first, unchanged
+        assertRefused(rule(pgv("v", "x\"" + "t" * 70), null), DestinationTargets.UnsafeVectorTableRefusal, "quote and long")
+        assertRefused(rule(pgv("v", "docs", schema = "s\"" + "s" * 70), null), DestinationTargets.UnsafeVectorTableRefusal, "quote schema and long")
+        assertRefused(rule(pgv("v", null, schema = "s" * 70), null), DestinationTargets.BlankVectorTableRefusal, "blank table, long schema")
+        assertRefused(rule(pgv("v", " ", schema = "s" * 70), null), DestinationTargets.BlankVectorTableRefusal, "spaces table, long schema")
+
+        // ---- grandfathered: a stored over-long name saved again unchanged
+        for ((s, t) <- longNames) {
+            val clue = "[" + s + "].[" + t + "]"
+            val stored = pgv("v", t, schema = s)
+            assert(rule(stored, stored).isEmpty, clue + " unchanged")
+            assert(rule(stored.copy(tags = java.util.Arrays.asList("changed"), catalog = "Finance", version = 3), stored).isEmpty, clue + " other fields")
+        }
+        // changed to another over-long name (even one PostgreSQL cuts to the same table): refused
+        assertRefused(rule(pgv("v", "t" * 80), pgv("v", "t" * 70)), LongText, "other long table")
+        assertRefused(rule(pgv("v", "t" * 63 + "_two"), pgv("v", "t" * 63 + "_one")), LongText, "same cut, other name")
+        assertRefused(rule(pgv("v", "docs", schema = "s" * 80), pgv("v", "docs", schema = "s" * 70)), LongText, "other long schema")
+        // keeping the long table but changing the schema: refused
+        assertRefused(rule(pgv("v", "t" * 70, schema = "vec"), pgv("v", "t" * 70, schema = "public")), LongText, "long table, schema changed")
+        assert(rule(pgv("v", "t" * 70, schema = null), pgv("v", "t" * 70, schema = "public")).isEmpty, "long table, null schema")
+        // the length rule's grandfathering compares the effective schema (a
+        // null schema is "public", as the loader addresses it): the UI always
+        // sends a schema, so a stored long table saved with none stays editable
+        assert(rule(pgv("v", "t" * 70, schema = "public"), pgv("v", "t" * 70, schema = null)).isEmpty, "stored null schema saved as public")
+        assert(
+            rule(pgv("v", "t" * 70, schema = "public").copy(tags = java.util.Arrays.asList("edited")), pgv("v", "t" * 70, schema = null)).isEmpty,
+            "stored null schema, other fields edited"
+        )
+        assert(rule(pgv("v", "docs", schema = "s" * 70), pgv("v", "docs", schema = "s" * 70)).isEmpty, "long schema unchanged")
+        // a different schema with the same long table is another table: refused
+        assertRefused(rule(pgv("v", "t" * 70, schema = "vec"), pgv("v", "t" * 70, schema = null)), LongText, "stored null schema, schema changed")
+        assertRefused(rule(pgv("v", "t" * 70, schema = " "), pgv("v", "t" * 70, schema = null)), LongText, "stored null schema, spaces schema")
+        // the same through version restore, for every caller
+        for ((who, r) <- callers) {
+            for (out <- restore(r, pgv("v", "t" * 70, schema = "public").copy(version = 2), pgv("v", "t" * 70, schema = null)))
+                assert(out.isEmpty, who + " restore public over null")
+            for (out <- restore(r, pgv("v", "t" * 70, schema = null).copy(version = 2), pgv("v", "t" * 70, schema = "public")))
+                assert(out.isEmpty, who + " restore null over public")
+            for (out <- restore(r, pgv("v", "t" * 70, schema = "vec").copy(version = 2), pgv("v", "t" * 70, schema = null)))
+                assertRefused(out, LongText, who + " restore other schema over null")
+        }
+        // changing a long name to a short one: accepted
+        assert(rule(pgv("v", "docs"), pgv("v", "t" * 70)).isEmpty)
+
+        // ---- every caller, through the version restore forms
+        val allCallers = callers :+ ("restricted session" -> restricted)
+        for ((s, t) <- longNames; (who, r) <- allCallers) {
+            val snap = pgv("v", t, schema = s).copy(version = 2)
+            val clue = "[" + s + "].[" + t + "] " + who
+            for (out <- restore(r, snap, null)) assertRefused(out, LongText, clue + " missing live")
+            for (out <- restore(r, snap, pgv("v", "docs"))) assertRefused(out, LongText, clue + " other live")
+            for (out <- restore(r, snap, pgv("v", t, schema = "vec"))) assertRefused(out, LongText, clue + " other live schema")
+        }
+        for ((s, t) <- longNames; (who, r) <- callers)
+            for (out <- restore(r, pgv("v", t, schema = s).copy(version = 2), pgv("v", t, schema = s)))
+                assert(out.isEmpty, "[" + s + "].[" + t + "] " + who + " identical live")
+
+        // ---- a new pipeline colliding, after the cut, with a stored long name:
+        // the length rule answers, before the container rule is reached
+        val storedLong = pgv("long_a", "t" * 63 + "_one")
+        val newLong = pgv("long_b", "t" * 63 + "_two")
+        for ((who, r) <- callers) {
+            assertRefused(EntityVersionAPIController.pipelineRestoreRefusal(r, newLong, null, Seq(storedLong)), LongText, who + " collision, 4-arg")
+            assertRefused(
+                EntityVersionAPIController.pipelineRestoreRefusal(r, newLong, null, Seq(storedLong), env, noProbe),
+                LongText,
+                who + " collision, 6-arg"
+            )
+        }
+        // the stored pair (saved before this change) restored onto itself: accepted
+        val storedPair = Seq(storedLong, newLong)
+        for ((who, r) <- callers)
+            assert(EntityVersionAPIController.pipelineRestoreRefusal(r, newLong.copy(version = 2), newLong, storedPair).isEmpty, who + " stored pair")
+        assert(PipelineAPIController.vectorContainerRefusal(editor, newLong, newLong, storedPair).isEmpty)
+
+        // ---- catalog restore and POST /pipeline: both save through savePipelineCore,
+        // which runs this same rule on the stored config of the name (source pin;
+        // the live restore needs MongoDB)
+        val pc = source("ai/datris/api/PipelineAPIController.scala")
+        val core = pc.indexOf("private def savePipelineCore(")
+        assert(core > 0 && pc.indexOf("PipelineAPIController.vectorTableNameRefusal(preserved, existing)", core) > core)
+        assert(pc.indexOf("savePipelineCore(config, changeNote, request, None)") > 0)
+        assert(source("ai/datris/api/CatalogAPIController.scala").contains("pipelineController.savePipelineInternal(toSave, note, request)"))
+    }
 }

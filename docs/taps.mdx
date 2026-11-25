@@ -238,10 +238,14 @@ collections = response.json()
 response = requests.post(f'{base_url}/query/mongodb', json={
     'database': mongo_db,
     'collection': 'my_collection',
-    'query': '{}'
+    'filter': {},
+    'limit': -1
 })
+response.raise_for_status()
 results = response.json()['results']
 ```
+
+A single MongoDB query is stopped after 30 seconds, or 5 minutes with `limit: -1`, and a result larger than the result-size ceiling (32 MB of JSON text by default, `DATRIS_QUERY_MAX_RESULT_MB`) is refused with `400`, never cut short. Check the status before reading `results`, so a refused read fails the run instead of loading nothing. To read a large collection, split it into disjoint ranges with `filter` (for example ranges of `_id` or of a timestamp field); `filter` is MongoDB extended JSON, so an ObjectId bound is `{"$oid": "..."}` and a date bound `{"$date": "<ISO-8601 timestamp>"}`. See [Query API](/api-reference/query-api#query-mongodb).
 
 The brainstorm AI knows about all of these endpoints, so if you mention "the X table on Datris" or "the Y collection on Datris" it will write the instruction to use the appropriate backend — no need to describe schema or column names; the script can introspect those at runtime via `/api/v1/metadata/postgres/columns` or `/api/v1/metadata/mongodb/collections`.
 

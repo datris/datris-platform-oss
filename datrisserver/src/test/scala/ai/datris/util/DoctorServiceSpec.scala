@@ -1459,4 +1459,83 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(sentence.contains("otherwise move the tap's script to built-in storage and back"), sentence)
         assert(!sentence.contains("store the script again"), sentence)
     }
+
+    // ------------------------------------------------------------------
+    // Postgres query login (plans/stories/postgres-query-role.md, Decision 6):
+    // when the Postgres secret carries queryUsername/queryPassword, one check
+    // says whether the query login connects and is not a superuser
+    // (rolsuper false); nothing at all when the keys are absent.
+    //
+    // The probe it reads is pinned here, as a member of Probes with a default
+    // so the existing fakes keep compiling:
+    //   def postgresQueryLogin(): Option[Either[String, (String, Boolean)]] = None
+    // None: the secret names no query login. Some(Left(why)): keys present but
+    // the login could not be checked (or is half-configured). Some(Right((user,
+    // superuser))): it connected, and whether that role has rolsuper. The
+    // member is reached through a proxy so this compiles before it exists.
+    // ------------------------------------------------------------------
+
+    private def withQueryLogin(answer: Option[Either[String, (String, Boolean)]]): Probes = {
+        val probe = classOf[Probes].getMethods.find(m => m.getName == "postgresQueryLogin" && m.getParameterCount == 0)
+        if (probe.isEmpty)
+            fail("DoctorService.Probes has no postgresQueryLogin(): Option[Either[String, (String, Boolean)]] (added by the story)")
+        val base = new FakeProbes()
+        java.lang.reflect.Proxy.newProxyInstance(
+            getClass.getClassLoader,
+            Array[Class[_]](classOf[Probes]),
+            new java.lang.reflect.InvocationHandler {
+                def invoke(p: Any, m: java.lang.reflect.Method, args: Array[AnyRef]): AnyRef =
+                    if (m.getName == "postgresQueryLogin" && m.getParameterCount == 0) answer
+                    else
+                        try m.invoke(base, Option(args).getOrElse(Array.empty[AnyRef]): _*)
+                        catch { case e: java.lang.reflect.InvocationTargetException => throw e.getCause }
+            }
+        ).asInstanceOf[Probes]
+    }
+
+    private def fullRows(p: Probes): Seq[(String, String, String, String, String)] =
+        DoctorService.run("full", Set.empty, Map.empty, p, slots, "1.62.0").checks.map(c => (c.id, c.status, c.severity, c.detail, c.remediation))
+
+    /** The rows a query login adds to the full report of the healthy fake. */
+    private def queryLoginRows(answer: Option[Either[String, (String, Boolean)]]): Seq[(String, String, String, String, String)] = {
+        val baseline = fullRows(new FakeProbes()).map(_._1).toSet
+        fullRows(withQueryLogin(answer)).filterNot(r => baseline.contains(r._1))
+    }
+
+    test("postgres query login: with query keys set and a superuser query login the check warns; without the keys the check is absent") {
+        val added = queryLoginRows(Some(Right(("reader-user-2b6d", true))))
+        assert(added.size == 1, "one row for the query login: " + added)
+        val (id, status, severity, detail, _) = added.head
+        assert(status == "warn" && severity == "warn", added.head.toString)
+        assert(detail.toLowerCase.contains("superuser") || detail.contains("rolsuper"), "says the query login is a superuser: " + detail)
+
+        // Without the keys: no row, and every other row as it was.
+        val absent = fullRows(withQueryLogin(None))
+        assert(!absent.exists(_._1 == id), "no " + id + " row without the keys: " + absent.map(_._1))
+        assert(absent == fullRows(new FakeProbes()), "nothing else changes without the keys")
+    }
+
+    test("postgres query login: a query login that connects and is not a superuser is ok") {
+        val added = queryLoginRows(Some(Right(("reader-user-2b6d", false))))
+        assert(added.size == 1, "one row for the query login: " + added)
+        assert(added.head._2 == "ok", added.head.toString)
+    }
+
+    test("postgres query login: a query login that could not be checked warns, and the counts-only detail drops the reason") {
+        val reason = "could not connect as the query login: Connection to pg-host-5d8e:5432 refused"
+        val added = queryLoginRows(Some(Left(reason)))
+        assert(added.size == 1, "one row for the query login: " + added)
+        val (id, status, severity, detail, remediation) = added.head
+        assert(status == "warn" && severity == "warn", added.head.toString)
+        assert(detail.contains(reason), detail)
+        assert(remediation.contains("queryUsername") && remediation.contains("queryPassword"), remediation)
+        val row = DoctorService.run("full", Set.empty, Map.empty, withQueryLogin(Some(Left(reason))), slots, "1.62.0").checks.find(_.id == id).get
+        assert(row.namelessDetail != null && !row.namelessDetail.contains(reason) && !row.namelessDetail.contains("pg-host"), row.namelessDetail)
+    }
+
+    test("postgres query login: not part of the boot lines or the quick report") {
+        val probes = withQueryLogin(Some(Right(("reader-user-2b6d", true))))
+        assert(!DoctorService.runStartup(probes, slots, "1.62.0").exists(_.id == "postgres.query_login"))
+        assert(!DoctorService.run("quick", Set.empty, Map.empty, probes, slots, "1.62.0").checks.exists(_.id == "postgres.query_login"))
+    }
 }

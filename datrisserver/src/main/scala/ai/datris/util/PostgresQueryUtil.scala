@@ -187,6 +187,11 @@ object PostgresQueryUtil {
             return PostgresPool.withEvictableConnectionFrom(testPool) { (conn, evict) => runOn(conn, finalSql, params, timeout, evict) }
 
         val secrets = SecretsRetrieverUtil.postgresSecrets()
+        // The login queries connect with: the secret's query login when it
+        // carries one, else the loading login. Half-configured is refused here,
+        // before any connection is opened.
+        val (user, pass) = SecretsRetrieverUtil.postgresQueryLogin(secrets)
+        if (SecretsRetrieverUtil.usesQueryLogin(secrets)) noteQueryLogin(user) else noteLoadingLogin()
         Class.forName("org.postgresql.Driver")
 
         // The secret's URL, with the database percent-encoded into its path
@@ -195,10 +200,40 @@ object PostgresQueryUtil {
 
         // Pooled: this is the interactive path where per-request DriverManager
         // connections hurt most. Connect/login timeouts live in PostgresPool.
-        PostgresPool.withEvictableConnection(jdbcUrl, secrets.username, secrets.password) { (conn, evict) =>
+        // Pools are keyed by (jdbcUrl, user), so the query login has its own.
+        PostgresPool.withEvictableConnection(jdbcUrl, user, pass) { (conn, evict) =>
             runOn(conn, finalSql, params, timeout, evict)
         }
     }
+
+    /** The query user queries last connected as, or null while they use the
+      * loading login (from the start, on an install without query keys). */
+    private val loggedQueryUser = new java.util.concurrent.atomic.AtomicReference[String](null)
+
+    /** One info line the first time queries connect with the secret's query
+      * login, and again if that user changes. Names the user only. */
+    private def noteQueryLogin(user: String): Unit =
+        if (user != loggedQueryUser.get && user != loggedQueryUser.getAndSet(user))
+            logger.info("Read-back queries connect as the Postgres query login '" + user + "' from the Postgres secret")
+
+    /** One info line when queries return to the loading login after using a
+      * query login in this process. Nothing on an install that never had one. */
+    private def noteLoadingLogin(): Unit =
+        if (loggedQueryUser.get != null && loggedQueryUser.getAndSet(null) != null)
+            logger.info("Read-back queries connect with the loading login again: the Postgres secret no longer names a query login")
+
+    /** Test seam: when set, [[queryLoginInUse]] reads this secret instead of
+      * Vault. */
+    @volatile private[util] var secretsOverride: ai.datris.model.PostgresSecrets = null
+
+    /** True when the Postgres secret names a query login that read-back
+      * queries connect with ([[SecretsRetrieverUtil.usesQueryLogin]]). False
+      * when it names none or cannot be read. */
+    private[util] def queryLoginInUse(): Boolean =
+        try {
+            val s = secretsOverride
+            SecretsRetrieverUtil.usesQueryLogin(if (s != null) s else SecretsRetrieverUtil.postgresSecrets())
+        } catch { case _: Exception => false }
 
     /** Runs `finalSql` on `conn` inside [[inReadOnlyTransaction]] and reads
       * every row. The caller's own SQL (no params) stays a plain statement,
@@ -288,14 +323,35 @@ object PostgresQueryUtil {
             catch { case e: Exception => logger.warn("Could not evict a query connection: " + e.getMessage) }
     }
 
+    /** The front boundary of every word and function pattern here: `\b`,
+      * tried only where an ASCII word character follows. Same matches as
+      * `\b` alone in front of a name that starts with a letter, but `\b` reads
+      * past a run of combining marks before the position it is tried at
+      * (Java 17), so tried at every position it would read such a run once
+      * per position. Guarded, it is tried right after a run at most once. */
+    private[util] val WordStart = "(?=\\w)\\b"
+
+    /** The patterns [[validateQuery]] refuses [[BLOCKED_FUNCTIONS]] with.
+      * Each ends with `(?!\w)`, not `\b`: it holds after every greedy `\w`
+      * run, so a pattern ending in one never retries shorter runs, and a
+      * listed name with a non-ASCII letter directly after it is refused (that
+      * is a different name to PostgreSQL, which then reports it unknown). */
+    private lazy val BlockedFunctionPatterns: Seq[scala.util.matching.Regex] =
+        BLOCKED_FUNCTIONS.map(fn => ("(?i)" + WordStart + fn + "(?!\\w)").r)
+
+    private lazy val BlockedKeywordPatterns: Seq[(String, scala.util.matching.Regex)] =
+        BLOCKED_KEYWORDS.toSeq.map(keyword => keyword -> ("(?i)" + WordStart + keyword + "\\b").r)
+
     private[util] def validateQuery(sql: String): Unit = {
+        QueryTextLimit.check(sql)
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 
         val normalized = sql.trim.stripSuffix(";")
 
         // Must start with SELECT or WITH (CTE)
-        val upper = normalized.toUpperCase
+        // Only the start is tested: upper-case just enough of it (QueryTextCase).
+        val upper = QueryTextCase.upperPrefix(normalized, 16)
         if (!upper.startsWith("SELECT") && !upper.startsWith("WITH"))
             throw new DatrisException("Only SELECT queries are allowed (WITH/CTE is also permitted)")
 
@@ -308,25 +364,24 @@ object PostgresQueryUtil {
             throw new DatrisException("SQL comments are not allowed in queries")
 
         // Check for blocked keywords as whole words
-        val upperSql = normalized.toUpperCase
-        BLOCKED_KEYWORDS.foreach { keyword =>
-            val pattern = ("(?i)\\b" + keyword + "\\b").r
-            if (pattern.findFirstIn(normalized).isDefined)
-                throw new DatrisException("Query contains blocked keyword: " + keyword)
+        BlockedKeywordPatterns.foreach {
+            case (keyword, pattern) =>
+                if (pattern.findFirstIn(normalized).isDefined)
+                    throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
 
         if (UnicodeEscapeQuote.findFirstIn(normalized).isDefined)
             throw new DatrisException("Unicode escape quoting (U&) is not allowed in queries")
 
-        BLOCKED_FUNCTIONS.foreach { fn =>
-            ("(?i)\\b" + fn + "\\b").r.findFirstIn(normalized).foreach { found =>
+        BlockedFunctionPatterns.foreach { pattern =>
+            pattern.findFirstIn(normalized).foreach { found =>
                 throw new DatrisException("Query contains blocked function: " + found)
             }
         }
     }
 
     private def appendLimitIfNeeded(sql: String, limit: Int): String = {
-        val upperSql = sql.toUpperCase
+        val upperSql = QueryTextCase.upper(sql)
         if (!upperSql.contains("LIMIT"))
             sql + " LIMIT " + limit
         else

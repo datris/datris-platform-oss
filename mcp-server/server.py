@@ -559,7 +559,7 @@ Tap workflow (for step 3 Option B):
     - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries — or, for a large source, yields them one at a time (a generator / iterator); the platform streams yielded records to disk, so a run is never limited by memory unless the script builds the whole result first.
   Batches beat rows for a large columnar or tabular source: For a large columnar or tabular source, yield each batch (a pyarrow RecordBatch, a pandas DataFrame, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (columns=[...]). Yielding one row at a time remains correct for small or API-paged sources.
   Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
-  Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever — the platform authenticates the callback per run by itself (a run-scoped DATRIS_PLATFORM_TOKEN the wrapper attaches to requests/urllib calls aimed at DATRIS_PLATFORM_HOST), so never add an x-api-key to these calls or ask the user for one. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
+  Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"filter": {...}, "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever — the platform authenticates the callback per run by itself (a run-scoped DATRIS_PLATFORM_TOKEN the wrapper attaches to requests/urllib calls aimed at DATRIS_PLATFORM_HOST), so never add an x-api-key to these calls or ask the user for one. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
   New tap + new pipeline — tap first, pipeline second, two checkpoints:
     create_tap (no target_pipeline, no cron) → test_tap → propose_pipeline_schema → checkpoint 1: present its `fields` as a table (column, recommended type, evidence) and ask the user to confirm or change the types, or pull more rows (call it again with a higher limit) → checkpoint 2: ONE question offering data-quality checks (codegen_rule), transformations (codegen_transform) and field protection (suggest_field_protection, then protect) against the confirmed column names — "none" is a valid answer → if the user chose data quality or transformations, propose the checks (then the transformations) as a numbered list, one per line, each naming the confirmed column it covers, and ask the user to confirm, remove or edit them before create_pipeline and, in the same message, ask whether a failing row should warn only (logged, loading continues) or reject the run; pass the answer as codegen_rule_on_failure (warn or error); pass only the confirmed list as codegen_rule / codegen_transform, verbatim, character for character (keep text that looks like an annotation), nothing added; nothing is saved until create_pipeline runs → create_pipeline with schema_fields (+ codegen_rule / codegen_transform / protect as answered) → update_tap with target_pipeline → cron via update_tap if the user asked for a schedule → run-or-ask. Recommendations are conservative: a column stays string unless the preview clearly supports a type, and each field says why (`stringReason` or `note`). Vector destinations and mongodb return `typeGrid: false` — show the preview and skip the type question and, for a vector destination, skip checkpoint 2 as well: the platform chunks and embeds on load, so there are no checks, transformations or protection to offer; say so in one line and go straight to create_pipeline (name + destination only) → update_tap (for mongodb, create the pipeline with a JSON sample of the preview rows, never schema_fields). Do not add more checkpoints: destination, key fields and schedule stay in prose.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script. For a new pipeline, omit target_pipeline and cron here — the pipeline is created after the schema is confirmed.
@@ -1531,9 +1531,9 @@ This callback lane is **Python-only**: an HTTP tap runs on the user's own infras
 
 Query endpoints (POST). Response shapes are EXACT and STABLE — trust them, do not probe alternate shapes or keys:
 - PostgreSQL: `POST /api/v1/query/postgres` with body `{"sql": "SELECT col FROM public.table_name", "database": <pg_db>, "limit": -1}` → `{results: [row dicts], count: int}`
-- MongoDB: `POST /api/v1/query/mongodb` with body `{"query": "...", "database": <mongo_db>, "collection": "...", "limit": -1}` → `{results: [document dicts], count: int}`
+- MongoDB: `POST /api/v1/query/mongodb` with body `{"filter": {...}, "database": <mongo_db>, "collection": "...", "limit": -1}` → `{results: [document dicts], count: int}` (`filter` is a find filter object; omit it to read the whole collection)
 
-Always pass `"limit": -1` (return everything); omitting it applies a small preview default and the tap silently reads a tiny slice. A single PostgreSQL query is limited to five minutes, also with `"limit": -1`: page a large read across several queries (for example by key range) instead of reading it in one. Metadata discovery is also available via GET: `/metadata/postgres/tables?database={pg_db}&schema=public`, `/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE`, `/metadata/mongodb/collections?database={mongo_db}`.
+Always pass `"limit": -1` (return everything); omitting it applies a small preview default and the tap silently reads a tiny slice. A single PostgreSQL query is limited to five minutes, also with `"limit": -1`: page a large read across several queries (for example by key range) instead of reading it in one. A single MongoDB query has the same time limits, 30 seconds or 300 seconds with `"limit": -1`, and a result-size ceiling (32 MB of JSON text by default): a larger result is refused, never cut short. To read a large collection, split it into disjoint ranges with `filter` (for example ranges of `_id` or of a timestamp field) and query each range; each range read may keep `"limit": -1`, since the range bounds it. `filter` is parsed as MongoDB extended JSON, so a range bound on an ObjectId is written `{"$oid": "<24 hex characters>"}` and on a date `{"$date": "<ISO-8601 timestamp>"}`. A MongoDB time-limit or size refusal answers HTTP 400, and a PostgreSQL query that fails (its time limit included) answers an error status too, each with `{"error": ...}` and no `results`: the script must check the status (`resp.raise_for_status()`, or fail on a non-200) before reading `results`, so a refused read fails the run instead of loading nothing. Metadata discovery is also available via GET: `/metadata/postgres/tables?database={pg_db}&schema=public`, `/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE`, `/metadata/mongodb/collections?database={mongo_db}`.
 
 Use this whenever a tap's fetch logic is driven by data in a Datris destination — e.g. a tap that reads an id/key list from a table a pipeline maintains, then fetches from the external source per id. The list stays live: no frozen copies of it hardcoded in the script, and no re-fetching data the platform already holds.
 
@@ -2747,19 +2747,28 @@ def _base_tools():
                 "the pipeline's config — same connection the loader uses, credentials never leave the server. "
                 "Only works for pipelines whose destination is Snowflake (database with useSnowflake=true). "
                 "Allowed statements: SELECT (WITH/CTE), SHOW, and DESCRIBE — LIMIT is auto-appended to SELECTs. "
+                "One statement per query: semicolons and the ->> operator are refused (string literals included); "
+                "to filter SHOW output, query information_schema instead. "
                 "Omit `sql` to preview the pipeline's destination table (the 'did my load land?' check). "
                 "Metadata discovery uses the same tool — there are no separate list_snowflake_* tools: "
                 "`SHOW DATABASES`, `SHOW SCHEMAS IN DATABASE <db>`, `SHOW TABLES IN SCHEMA <db>.<schema>`, "
                 "`DESCRIBE TABLE <db>.<schema>.<table>`, or query <db>.information_schema.columns. "
                 "Queries run on the customer's configured warehouse (which costs them compute) — keep them "
-                "targeted and let the default LIMIT stand unless the user asks for more."
+                "targeted and let the default LIMIT stand unless the user asks for more. "
+                "SYSTEM$ functions (except SYSTEM$TYPEOF and the clustering functions), NEXTVAL, GETNEXTVAL and "
+                "IDENTIFIER(...) calls are refused. "
+                "Calls to a model or a search or agent service are refused too: AI_* functions, the SNOWFLAKE.CORTEX "
+                "schema, CORTEX_SEARCH_BATCH, EXECUTE_AI_EVALUATION and name!METHOD(...). "
+                "The check is on the text, so such a name followed by ( is refused wherever it stands, literals, "
+                "quoted names and // comments included; rename an ai_ CTE or alias, or split the literal with ||. "
+                "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a Snowflake destination."},
                     "sql": {"type": "string", "description": "Read-only statement: SELECT/WITH, SHOW, or DESCRIBE. Omit to preview the pipeline's destination table."},
-                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited (300-second time limit)."}
                 },
                 "required": ["pipeline"]
             }
@@ -2779,14 +2788,19 @@ def _base_tools():
                 "list_sqlserver_* tools: `SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES`, "
                 "`SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '<table>'`. "
                 "Queries run on the customer's server — keep them targeted and let the default limit stand unless "
-                "the user asks for more."
+                "the user asks for more. A second statement is refused where it can be recognised: a second SELECT outside "
+                "UNION/EXCEPT/INTERSECT, unbalanced parentheses, a number joined to a word, control-flow or transaction words "
+                "(SET, BEGIN, WHILE, IF, PRINT and others) and NEXT VALUE FOR; the query is always rolled back. "
+                "Brace escapes such as {d '...'} and {fn ...} are refused; write the date as a string and use the T-SQL function. "
+                "The text {limit ...} is not allowed anywhere, even inside a string or a quoted name; use the limit parameter. "
+                "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a SQL Server destination."},
                     "sql": {"type": "string", "description": "Read-only T-SQL statement: SELECT or WITH. Omit to preview the pipeline's destination table."},
-                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited (300-second time limit)."}
                 },
                 "required": ["pipeline"]
             }
@@ -2805,28 +2819,34 @@ def _base_tools():
                 "`DESCRIBE TABLE <catalog>.<schema>.<table>`, or query <catalog>.information_schema.columns. "
                 "Queries run on the customer's SQL warehouse (which costs them compute) — keep them "
                 "targeted and let the default LIMIT stand unless the user asks for more. If the warehouse is "
-                "stopped, the first query auto-starts it and may take longer."
+                "stopped, the first query auto-starts it and may take longer. "
+                "Calls to http_request, remote_query, any ai_* function, vector_search, secret/try_secret, read_files, "
+                "the streaming readers, read_statestore, read_state_metadata, cloud_files_state, list_secrets, table_changes_by_path, "
+                "java_method/reflect/try_reflect and IDENTIFIER(...) are refused. "
+                "A read from a file path in place of a table (a format word or any qualifier before a backticked "
+                "location, such as json.`<path>`) is refused; name the table instead. "
+                "Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a cancelled query returns an error."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a Databricks destination."},
                     "sql": {"type": "string", "description": "Read-only statement: SELECT/WITH, SHOW, or DESCRIBE. Omit to preview the pipeline's destination table."},
-                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited (300-second time limit)."}
                 },
                 "required": ["pipeline"]
             }
         ),
         Tool(
             name="query_mongodb",
-            description="Query a MongoDB collection with optional filter and projection. Use list_mongodb_databases and list_mongodb_collections first to discover available data. Returns matching documents as JSON.",
+            description="Query a MongoDB collection with optional filter and projection. Use list_mongodb_databases and list_mongodb_collections first to discover available data. Returns matching documents as JSON. Every query has a time limit: 30 seconds, or 300 seconds with limit -1; a query past it is stopped and returns an error and no documents. A result larger than the server's size ceiling (32 MB of JSON text by default) is refused with an error, never cut short, whatever the limit. To read a large collection, split the read into disjoint ranges with a filter (for example ranges of _id or of a timestamp) and query each range separately. The query has no sort, so a positive limit is a guard on each call, not a way to page.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "collection": {"type": "string", "description": "MongoDB collection name"},
                     "filter": {"type": "object", "description": "MongoDB query filter (default: {})"},
                     "projection": {"type": "object", "description": "Fields to include/exclude (default: all fields)"},
-                    "limit": {"type": "integer", "description": "Maximum documents to return (default: 20). Pass -1 for unlimited — no cap, returns every matching document."},
+                    "limit": {"type": "integer", "description": "Maximum documents to return (default: 20). Pass -1 for every matching document (no document-count cap); the query then runs under a 300-second time limit instead of 30 seconds, and the result-size ceiling still applies: a result past it is refused, so split the read into disjoint ranges with a filter."},
                 },
                 "required": ["collection"]
             }
@@ -3140,7 +3160,7 @@ def _base_tools():
                 "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
                 "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen. "
                 "The platform enforces this: passing `cron_expression` for a script (or endpoint) that has not passed `test_tap` returns HTTP 409 with the remedy — create the tap without `cron_expression`, call `test_tap` until it succeeds, then `update_tap` with the cron. Replacing the script of a scheduled tap is refused the same way until re-tested — to replace the script of a SCHEDULED tap, clear the cron via `update_tap` (empty `cron_expression`) first, then call `create_tap` with the new script, `test_tap`, then `update_tap` with the cron. "
-                "Scripts can read data already stored in Datris WITHOUT credentials: every run auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE, and the script queries via POST http://{host}:{port}/api/v1/query/postgres with {\"sql\": ..., \"database\": <pg_db>, \"limit\": -1} (or /query/mongodb with query/database/collection/limit) — the platform executes it with its own credentials and returns {results, count}. NEVER request the platform's own DB credentials in a tap secret and NEVER hardcode a snapshot of platform data into the script — read it live. The tap secret carries only the external source's credentials. "
+                "Scripts can read data already stored in Datris WITHOUT credentials: every run auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE, and the script queries via POST http://{host}:{port}/api/v1/query/postgres with {\"sql\": ..., \"database\": <pg_db>, \"limit\": -1} (or /query/mongodb with filter/database/collection/limit; check the HTTP status before reading results: a refused or failed read answers an error status with {\"error\": ...}) — the platform executes it with its own credentials and returns {results, count}. NEVER request the platform's own DB credentials in a tap secret and NEVER hardcode a snapshot of platform data into the script — read it live. The tap secret carries only the external source's credentials. "
                 "Large sources: `fetch()` may `yield` records (a generator / iterator) instead of returning a list — the platform streams yielded records to disk one at a time, so the run is not limited by memory; a script that builds millions of rows into a list is killed for memory (exit code -9). Read the source in chunks / pages and yield each row; never cap the rows or split the source for size unless the estimate below exceeds a budget and the user has chosen chunking. "
                 "Stream the source, never download it: the runner's only writable area is a 512 MB in-memory scratch space shared with installed packages, so a script that saves a large file locally fails with `No space left on device` — read remote files directly (HTTP range reads via pyarrow + fsspec, `pd.read_csv(url, chunksize=...)`, `requests` `stream=True`) and yield as you go. "
                 "Size a large source BEFORE creating anything: staged bytes per record ≈ 26 bytes × column count (JSON keys repeat on every row) against `PIPELINE_MAX_PAYLOAD_MB` (the value in force is `pipelineMaxPayloadMB` from `get_version`; default 4096 MB, 0 = unlimited), and script time ≈ rows ÷ 15,000 per second emitting one record at a time or rows ÷ 90,000 per second emitting batches against `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s) — call `get_version` for both values in force before you size, name the rate you used, show the user a rows, bytes/record, GB staged, minutes table, and if either estimate is over its budget let the user choose first: raise the variable, narrow the window, or chunk the range via `run_tap` `params`. Reading only the columns the destination needs cuts both numbers linearly."

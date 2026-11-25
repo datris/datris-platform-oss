@@ -208,4 +208,125 @@ class PipelineDeletePlanSpec extends AnyFunSuite {
         assert(PipelineDeletePlan.keptLabels(mixed, env) == Seq("postgres table datris.public.kd_rows"))
         assert(PipelineDeletePlan.keptLabels(pgv("kd_pgv", "kd_chunks"), env).isEmpty)
     }
+
+    // ------------------------------------------------------------------------
+    // Story: pgvector: two table names that PostgreSQL cuts to the same 63
+    // bytes are treated as one table
+    // (plans/stories/pgvector-long-names-one-table.md), Acceptance,
+    // PipelineDeletePlanSpec (extended). DELETE /pipeline keeps every vector
+    // container `VectorContainers.sharedOnDelete(config, others)` returns
+    // (`cleanupDestinationData`'s `dropVector` guard drops the pgvector table
+    // only when `VectorContainers.key(store, tableName, schemaName)` is not
+    // in that set) and reports each with
+    // `PipelineAPIController.vectorDeleteWarnings`, naming the sharer only
+    // when the caller may see it.
+
+    private def delReq(rk: ai.datris.model.ResolvedKey): jakarta.servlet.http.HttpServletRequest = {
+        val r = org.mockito.Mockito.mock(classOf[jakarta.servlet.http.HttpServletRequest])
+        org.mockito.Mockito.when(r.getMethod).thenReturn("DELETE")
+        org.mockito.Mockito.when(r.getRequestURI).thenReturn("/api/v1/pipeline")
+        org.mockito.Mockito.when(r.getRemoteAddr).thenReturn("127.0.0.1")
+        org.mockito.Mockito.when(r.getAttribute(ai.datris.config.TenantInterceptor.ResolvedKeyAttr)).thenAnswer(_ => rk)
+        r
+    }
+
+    private def pgvIn(name: String, catalog: String, table: String, schema: String): PipelineConfig =
+        PipelineConfig(
+            name = name,
+            catalog = catalog,
+            createdByKeyLabel = "someone",
+            destination = Destination(pgvector = PGVectorConfig(table, schema, chunking, null, null, null))
+        )
+
+    /** What the delete of `config` does with its pgvector table, given the
+      * other stored configs: true when the guard keeps it. */
+    private def tableKept(config: PipelineConfig, others: Seq[PipelineConfig]): Boolean = {
+        val keep = VectorContainers.sharedOnDelete(config, others).map(_._1).toSet
+        val p = config.destination.pgvector
+        VectorContainers.key("pgvector", p.tableName, Option(p.schemaName)).exists(keep.contains)
+    }
+
+    test("deleting one of two pipelines whose pgvector names collide after the cut keeps the table and names the sharer") {
+        val p63 = "kd" + "x" * 61
+        assert(p63.length == 63)
+        val a = pgvIn("kd_long_a", "Sales", p63 + "_one", "public")
+        val b = pgvIn("kd_long_b", "HR", p63 + "_two", null)
+        val c = pgvIn("kd_long_c", "Sales", "kd" + "x" * 60 + "y_three", "public") // differs within 63 bytes
+        val stored = Seq(a, b, c)
+
+        // the guard keeps the table on either delete
+        assert(tableKept(a, stored), "delete of " + a.name)
+        assert(tableKept(b, stored), "delete of " + b.name)
+        val shared = VectorContainers.sharedOnDelete(a, stored)
+        assert(shared.size == 1, shared)
+        assert(shared.head._2.map(_.name) == Seq("kd_long_b"))
+
+        // the existing Kept warning, sharer named for a caller who may see it
+        val full = delReq(ResolvedKey(None, "full", Nil, isLegacyFullAccess = true))
+        val warnings = ai.datris.api.PipelineAPIController.vectorDeleteWarnings(full, a, stored)
+        assert(warnings.size == 1, warnings)
+        assert(warnings.head.startsWith("Kept pgvector table "), warnings.head)
+        assert(warnings.head.contains(p63), warnings.head)
+        assert(warnings.head.contains("kd_long_b"), warnings.head)
+        assert(!warnings.head.contains("kd_long_c"), warnings.head)
+
+        // a restricted session that cannot see the sharer gets the name-free line
+        val bob = delReq(
+            APIKeyValidator.resolveFromSession(
+                User("bob", "h", User.RoleEditor, null, null, null, restricted = true, catalogGrants = InMemoryUserDb.grants("Sales" -> "edit"))
+            )
+        )
+        val hidden = ai.datris.api.PipelineAPIController.vectorDeleteWarnings(bob, a, stored)
+        assert(hidden.size == 1, hidden)
+        assert(hidden.head.startsWith("Kept pgvector table "), hidden.head)
+        assert(!hidden.head.contains("kd_long_b") && !hidden.head.contains("HR"), hidden.head)
+
+        // a two-byte letter straddling byte 63: PostgreSQL keeps the 62-byte prefix
+        val p62 = "kd" + "x" * 60
+        val s1 = pgvIn("kd_straddle", "Sales", p62 + "\u00e9", "public")
+        val s2 = pgvIn("kd_exact62", "Sales", p62, "public")
+        assert(tableKept(s1, Seq(s1, s2)) && tableKept(s2, Seq(s1, s2)))
+        assert(ai.datris.api.PipelineAPIController.vectorDeleteWarnings(full, s1, Seq(s1, s2)).exists(_.contains("kd_exact62")))
+
+        // long schemas collide the same way
+        val ls1 = pgvIn("kd_schema_one", "Sales", "kd_docs", "s" * 63 + "_one")
+        val ls2 = pgvIn("kd_schema_two", "Sales", "kd_docs", "s" * 63 + "_two")
+        assert(tableKept(ls1, Seq(ls1, ls2)))
+
+        // a name that differs within 63 bytes shares nothing: its table is dropped, no warning
+        assert(!tableKept(c, stored))
+        assert(ai.datris.api.PipelineAPIController.vectorDeleteWarnings(full, c, stored).isEmpty)
+        // and a lone long name is dropped as before
+        assert(!tableKept(a, Seq(a, c)))
+        assert(ai.datris.api.PipelineAPIController.vectorDeleteWarnings(full, a, Seq(a, c)).isEmpty)
+    }
+
+    test("a Kept warning and a container refusal for a long pgvector name show the name as configured, not the cut form") {
+        val p63 = "kd" + "x" * 61
+        val longSchema = "s" * 63 + "_schema"
+        val a = pgvIn("kd_long_a", "Sales", p63 + "_one", longSchema)
+        val b = pgvIn("kd_long_b", "Sales", p63 + "_two", longSchema)
+        val full = delReq(ResolvedKey(None, "full", Nil, isLegacyFullAccess = true))
+
+        val kept = ai.datris.api.PipelineAPIController.vectorDeleteWarnings(full, a, Seq(a, b))
+        assert(kept.size == 1, kept)
+        assert(kept.head.startsWith("Kept pgvector table " + longSchema + "." + p63 + "_one: "), kept.head)
+        assert(kept.head.contains("kd_long_b"), kept.head)
+
+        val refused = ai.datris.api.PipelineAPIController.vectorContainerRefusal(full, b, null, Seq(a))
+        assert(refused.isDefined)
+        val body = refused.get.getBody
+        assert(body.contains("pgvector table " + longSchema + "." + p63 + "_two is already used"), body)
+        assert(body.contains("kd_long_a"), body)
+
+        // the display key carries the configured names; the identity key the cut ones
+        val k = VectorContainers.keysOf(a).head
+        assert(k.name == p63 && k.schema == "s" * 63)
+        val shown = VectorContainers.displayKey(k, a)
+        assert(shown.name == p63 + "_one" && shown.schema == longSchema)
+        assert(VectorContainers.displayKey(k, pgvIn("n", "Sales", p63 + "_one", null)) == k)
+        // a null schema shows as public, as before
+        val n = pgvIn("kd_null", "Sales", p63 + "_one", null)
+        assert(VectorContainers.displayKey(VectorContainers.keysOf(n).head, n).schema == "public")
+    }
 }

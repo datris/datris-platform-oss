@@ -244,8 +244,9 @@ class PGVectorLoader(jobContext: JobContext) {
         if (pgvectorConfig.metadata != null) pgvectorConfig.metadata.asScala.keys.toList else List.empty
 
     /** A schema, table or metadata key Postgres cannot take as a quoted
-      * identifier (empty, or holding NUL) fails the load with a plain message
-      * before any statement is built. */
+      * identifier (empty, or holding NUL), or two metadata keys PostgreSQL
+      * would cut to one column name ([[PgIdentifier.kept]]), fail the load
+      * with a plain message before any statement is built. */
     private def requireNames(schemaName: String, tableName: String, metadataKeys: Seq[String]): Unit = {
         def bad(s: String): Boolean = s == null || s.isEmpty || s.indexOf('\u0000') >= 0
         if (bad(schemaName))
@@ -254,6 +255,22 @@ class PGVectorLoader(jobContext: JobContext) {
             throw new DatrisException("The pgvector table name must not contain NUL characters. Set destination.pgvector.tableName.")
         if (metadataKeys.exists(bad))
             throw new DatrisException("pgvector metadata keys must not be empty or contain NUL characters. Fix destination.pgvector.metadata.")
+        // Each key becomes a column; PostgreSQL keeps only the first 63 bytes
+        // of a name, so two keys equal in those bytes would be one column.
+        val firstByCut = scala.collection.mutable.LinkedHashMap[String, String]()
+        metadataKeys.foreach { k =>
+            val cut = PgIdentifier.kept(k)
+            firstByCut.get(cut) match {
+                case Some(other) if other != k =>
+                    throw new DatrisException(
+                        "pgvector metadata keys '" + other + "' and '" + k + "' are the same in their first " + PgIdentifier.MaxBytes +
+                            " bytes, which is all PostgreSQL keeps of a column name, so they would be one column. " +
+                            "Rename one of them in destination.pgvector.metadata."
+                    )
+                case Some(_) =>
+                case None => firstByCut(cut) = k
+            }
+        }
     }
 
     private def sendNotification(): Unit = {

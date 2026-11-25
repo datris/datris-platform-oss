@@ -23,7 +23,8 @@ import java.util.Locale
   *
   * Families: `pgtable` (a Postgres destination table and a pgvector table are
   * the same Postgres object when schema and table match and the databases
-  * match or the pgvector database is unknown), `mongodb`, `snowflake`,
+  * match or the pgvector database is unknown; each name compared on the
+  * first 63 UTF-8 bytes PostgreSQL keeps, [[PgIdentifier.kept]]), `mongodb`, `snowflake`,
   * `databricks`, `sqlserver`, `objectstore` (prefix containment on a
   * path-segment boundary, as `ObjectStoreSpark.destinationsOverlap`), `kafka`,
   * `activemq`. Vector stores other than pgvector have no key here (the
@@ -127,9 +128,13 @@ object SharedDatasets {
                     pa.isEmpty || pb.isEmpty || pa == pb || pa.startsWith(pb + "/") || pb.startsWith(pa + "/")
                 }
             case "pgtable" =>
-                val sameObject = a.parts(1) == b.parts(1) && a.parts(2) == b.parts(2)
+                // PostgreSQL keeps only the first 63 UTF-8 bytes of a name, so
+                // the database, schema and table compare as it keeps them (the
+                // keys and labels keep the configured names).
+                def same(i: Int): Boolean = PgIdentifier.kept(a.parts(i)) == PgIdentifier.kept(b.parts(i))
+                val sameObject = same(1) && same(2)
                 val crossKind = a.kind == "pgvector" || b.kind == "pgvector"
-                sameObject && (a.parts.head == b.parts.head ||
+                sameObject && (same(0) ||
                     (crossKind && (pgvectorUnknown(a) || pgvectorUnknown(b))))
             case _ => a.parts == b.parts
         }

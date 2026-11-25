@@ -58,15 +58,16 @@ The endpoint enforces multiple layers of protection:
 
 - **Read-only transaction** — every query runs inside a transaction that PostgreSQL itself treats as read-only and that is never committed, so a query cannot change data. Each query starts from a clean session.
 - **Time limit** — a query is cancelled after 30 seconds, or after 5 minutes when `limit` is `-1`; a cancelled query returns an error and no rows. Page a large read.
+- **Query length** — query text longer than 1,000,000 characters, counted as sent (surrounding spaces included), is rejected with `500 Internal Server Error` and `Query text is too long: <n> characters (the limit is 1000000)`. Only the API key, the request's parameters and the `limit` value are checked before it; nothing in the query itself is.
 - **SELECT-only** — only queries starting with `SELECT` (or `WITH`) are allowed
 - **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected, as are queries that call server administration, server file, replication or remote-connection functions, or a small set of other functions; the error names the word. Words are matched anywhere in the query, string literals included. One quoting form, Unicode-escape quoting (`U&`), is not accepted.
 - **No stacked queries** — semicolons are not allowed
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
 - **LIMIT enforcement** — if no `LIMIT` is present in the SQL, one is appended automatically using the request's `limit` value (or the default 100). Pass `limit: -1` to bypass the automatic append entirely — the caller's SQL runs as-is.
 
-A query refused by one of these checks (an empty query, a query that does not start with `SELECT` or `WITH`, a blocked word or function, a semicolon, a comment, `U&` quoting) returns `500 Internal Server Error` with `{"error": "..."}`, the message naming the rule (for example `Only SELECT queries are allowed (WITH/CTE is also permitted)` or `Query contains blocked keyword: DROP`).
+A query refused by one of these checks (query text over the length limit, an empty query, a query that does not start with `SELECT` or `WITH`, a blocked word or function, a semicolon, a comment, `U&` quoting) returns `500 Internal Server Error` with `{"error": "..."}`, the message naming the rule (for example `Only SELECT queries are allowed (WITH/CTE is also permitted)` or `Query contains blocked keyword: DROP`).
 
-Queries run with the platform's own PostgreSQL credentials (the PostgreSQL secret), which pipelines also use to load data. As for any service account, give that secret a role with only the privileges it needs (create and write in the destination schemas) rather than a superuser.
+Queries run with the platform's own PostgreSQL credentials (the PostgreSQL secret), which pipelines also use to load data, unless that secret also names a separate query login (`queryUsername` and `queryPassword`): queries then connect as that login and loads keep theirs. With a query login set, a secret that has only one of the two keys, or names the loading user as the query user with a different password, refuses every query with `500 Internal Server Error` and `{"error": "..."}` naming the problem, and a table the query user may not read answers `500` with PostgreSQL's `permission denied` message. See [Separate query login](/destinations/postgres#separate-query-login).
 
 ---
 
@@ -86,7 +87,7 @@ POST /api/v1/query/mongodb
 | `database` | string | No | configured MongoDB database | MongoDB database name to query. |
 | `filter` | object | No | `{}` | MongoDB query filter |
 | `projection` | object | No | all fields | Fields to include/exclude |
-| `limit` | integer | No | 20 | Maximum documents to return. Pass `-1` for unlimited (tap scripts use this to read every document). Omit for the preview default of 20; any positive value is honored with no cap. |
+| `limit` | integer | No | 20 | Maximum documents to return. Pass `-1` for unlimited (tap scripts use this to read every document); the query then runs under a 5-minute time limit instead of 30 seconds. Omit for the preview default of 20; any positive value is honored with no cap on the count. The result-size ceiling below applies to every limit. |
 
 ### Example
 
@@ -119,10 +120,13 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 - **Data collections only** — queries read data collections only: never MongoDB's own system databases, `system.` collections, or the collections in which the platform keeps its own state. Any of these returns `400` with `{"error": "This database or collection is not available for queries."}`.
 - **Blocked operators** — a filter or a projection containing `$where`, `$function`, or `$accumulator`, at any depth (nested documents and arrays included), is rejected, as these allow arbitrary JavaScript execution
 - **Projection** — plain inclusion and exclusion (`1`, `0`, `true`, `false`), `$slice`, `$elemMatch`, `$meta` and aggregation expressions other than the blocked operators are accepted
-- **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this), so pass a positive `limit` for previews
+- **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this) within the time limit and the result-size ceiling, so pass a positive `limit` for previews
+- **Time limit** — a query is stopped on the MongoDB server after 30 seconds, or after 5 minutes when `limit` is `-1`; a stopped query returns `400` with `{"error": "The query did not finish within its time limit of 30 seconds; split the read into ranges with a filter (a positive limit on each call is only a guard)."}` (300 seconds for `-1`) and no documents
+- **Result-size ceiling** — a result larger than 32 MB of JSON text (counted in characters as the documents are serialised, 1 MB = 1024 × 1024) is refused with `400` and `{"error": "The result is larger than 32 MB; split the read into ranges with a filter (a positive limit on each call is only a guard)."}`, never cut short. The server stops reading as soon as the ceiling is passed. It applies to positive limits as well as `-1`. The default is small because the server holds several copies of a result in memory while it answers; an operator with a larger heap can raise it with `DATRIS_QUERY_MAX_RESULT_MB` in `.env`, or set `0` for none (see [Configuration](/configuration-reference#container-environment-variables))
+- **Reading a large collection** — split the read into disjoint ranges with a filter (for example ranges of `_id` or of a timestamp) and read each range separately. The route has no sort or skip, so a positive `limit` is a guard on each call, not a way to page: the documents it returns are not guaranteed to be the first ones in any order. `filter` is parsed as MongoDB extended JSON, so a range bound on an ObjectId is written `{"$oid": "<24 hex characters>"}` and on a date `{"$date": "<ISO-8601 timestamp>"}`, for example `{"_id": {"$gt": {"$oid": "..."}}}`
 - **Standard MongoDB query operators** (`$eq`, `$gt`, `$in`, `$regex`, etc.) are safe and fully supported
 
-A filter or projection holding a blocked operator returns `500 Internal Server Error` with `{"error": "..."}` naming it, for example `MongoDB filter contains blocked operator: $where`; an empty collection name returns `500` too. A system or platform collection returns `400`, as above.
+A filter or projection holding a blocked operator returns `500 Internal Server Error` with `{"error": "..."}` naming it, for example `MongoDB filter contains blocked operator: $where`; an empty collection name returns `500` too. A system or platform collection, a query past its time limit and a result past the size ceiling return `400`, as above.
 
 ---
 
@@ -215,7 +219,7 @@ POST /api/v1/query/snowflake
 |-------|------|----------|---------|-------------|
 | `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a Snowflake destination. |
 | `sql` | string | No | `SELECT * FROM {destination table}` | SQL to execute. When omitted, previews the pipeline's destination table. |
-| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited (also disables the query timeout). |
+| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited; the query then runs under a 5-minute time limit instead of 30 seconds. |
 
 ### Example
 
@@ -249,12 +253,29 @@ The `sql` field echoes the query that actually ran, including any automatically 
 
 ### Safety
 
+- **Query length** — query text longer than 1,000,000 characters, counted as sent (surrounding spaces included), is rejected with `Query text is too long: <n> characters (the limit is 1000000)`. Only the API key, the request's parameters, the access checks and the `limit` value are checked before it; nothing in the query itself is.
 - **Read-only allowlist** — queries must start with `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, or `DESC`. `SHOW`/`DESCRIBE` are allowed so agents can discover databases, schemas, tables, and columns.
-- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `CALL`, `EXECUTE`, `EXEC`, `PUT`, `REMOVE`, `COPY`, `MERGE`, or `USE` are rejected (`USE` is blocked so a query cannot re-point the session at another database or role)
-- **No stacked queries** — semicolons are not allowed
+- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `CALL`, `EXECUTE`, `EXEC`, `PUT`, `REMOVE`, `COPY`, `MERGE`, `USE`, or `UNDROP` are rejected (`USE` is blocked so a query cannot re-point the session at another database or role)
+- **One statement** — a query is one statement. Semicolons are rejected, and so is Snowflake's `->>` flow operator, which runs a further statement after the first (`Chained statements are not allowed in queries (the ->> operator)`). The operator check covers string literals and quoted identifiers too, and the operator's characters separated by whitespace or `//` comments (a `//` comment is taken as possibly ending at a tab or other control character as well as at the line end, so the check errs toward rejecting); to match text that holds the operator, build the value (`'-' || '>>'`). A lambda arrow (`x -> x > 1`) is fine.
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
 - **LIMIT enforcement** — if a `SELECT`/`WITH` query has no `LIMIT`, one is appended using the request's `limit` value. `SHOW`/`DESCRIBE` output is row-capped at the same value.
-- **Query timeout** — 30 seconds, bounding both hung requests and warehouse spend. Not applied when `limit: -1`.
+- **Function blocklist** — a query that names a `SYSTEM$` function anywhere is rejected with the function named (`Query contains blocked function: <name>`), except the read-only `SYSTEM$TYPEOF`, `SYSTEM$CLUSTERING_INFORMATION` and `SYSTEM$CLUSTERING_DEPTH`. This covers functions that cancel or abort other queries, sessions or transactions, resume pipes or tasks, or wait (`SYSTEM$CANCEL_QUERY`, `SYSTEM$ABORT_SESSION`, `SYSTEM$WAIT` and others). `NEXTVAL` and `GETNEXTVAL` are rejected anywhere, since reading them advances a sequence, and a call to `IDENTIFIER(...)` is rejected, since it can name any function from a string (this includes `FROM IDENTIFIER('<table>')`; write the table name instead). Like the statement blocklist, the check covers string literals too.
+- **Model and search calls** — a query that calls a language or embedding model, a search or agent service, or a trained model's methods is rejected with the function named, as on Databricks: any call to a function whose name begins `AI_` (`AI_COMPLETE`, `AI_EMBED`, `AI_COUNT_TOKENS` and the rest, a user-defined function of that name too), any name in the `SNOWFLAKE.CORTEX` schema, call or not (reported as `SNOWFLAKE.CORTEX.<NAME>`), a call to `CORTEX_SEARCH_BATCH` or `EXECUTE_AI_EVALUATION` (which starts, cancels or deletes an evaluation run), and a method call written with `!` (such as `<model>!PREDICT(...)`, reported as `!PREDICT`). Whitespace and `//` comments around the dots or before the `(` do not hide a call, and a letter written in another script that case rules fold to an ASCII one counts as that letter. `!=` and the other comparisons, and the `VECTOR_*` functions (arithmetic on stored vectors, no model), are unaffected, and so are a plain column or table named `ai_score` and a longer name such as `MY_SNOWFLAKE.CORTEX` (another database).
+
+  The check is on the text, string literals, quoted identifiers and `//` comments included, not on what each name means. An `AI_` name followed by `(`, `CORTEX_SEARCH_BATCH` or `EXECUTE_AI_EVALUATION` followed by `(`, a `!` followed by a word and `(`, and `SNOWFLAKE.CORTEX.` are refused wherever they stand, so these ordinary reads are refused too:
+  - a CTE or alias beginning `ai_` that has a column list: `WITH ai_x (a) AS (...)`, `FROM (VALUES (1, 2)) AS ai_v (a, b)`; rename it, or drop the column list and name the columns inside (`WITH ai_x AS (SELECT 1 AS a) ...`);
+  - the outer-join marker after an `ai_` column, `t2.ai_id (+)`; write the join as `LEFT JOIN ... ON` instead;
+  - `DESC FUNCTION` / `DESC PROCEDURE ai_x(...)`; use `SHOW USER FUNCTIONS LIKE 'AI_X'` / `SHOW PROCEDURES LIKE 'AI_X'`;
+  - a `MATCH_RECOGNIZE` pattern symbol beginning `ai_` before a group, `PATTERN (ai_start (ai_up | ai_down)+)`; rename the pattern symbol;
+  - a string literal holding such a shape, such as `'ai_team (west)'`, `'cortex_search_batch (nightly)'`, `'Done! Next (soon)'` or `LIKE '%snowflake.cortex.complete%'`; split it or build it with `||` (`'Done!' || ' Next (soon)'`, `'%snowflake.' || 'cortex.complete%'`, `'cortex_search_batch' || ' (nightly)'`);
+  - a `//` comment holding such a shape, such as `// latest ai_results (prod)`; reword or remove the comment;
+  - a JSON path through keys named `snowflake` and `cortex` (`src:snowflake.cortex.enabled`); use bracket paths (`src['snowflake']['cortex']['enabled']`);
+  - a quoted identifier holding such a shape, such as a column named `"AI_Confidence (%)"` or `"Sales! Total (USD)"`. Such a column cannot be named through this route. `SELECT *` still returns it, or create a view in Snowflake that gives it another name and read the view.
+- **Query timeout** — 30 seconds, bounding both hung requests and warehouse spend; 5 minutes when `limit: -1`. A cancelled query returns an error and no rows.
+
+<Note>
+Snowflake has no read-only session. The query runs as the pipeline's credentials role, so the blocklists are a second line and that role's grants are the real control: give the pipeline a least-privilege role. External functions cannot be told apart by name and are bounded only by those grants. By default Snowflake grants the `SNOWFLAKE.CORTEX_USER` database role and the `USE AI FUNCTIONS` privilege to `PUBLIC`, so every role can call the model and search functions above; to stop that outside Datris too, run `REVOKE DATABASE ROLE SNOWFLAKE.CORTEX_USER FROM ROLE PUBLIC;` and `REVOKE USE AI FUNCTIONS ON ACCOUNT FROM ROLE PUBLIC;` and grant them back only to the roles that need them.
+</Note>
 
 ### Error Cases
 
@@ -262,7 +283,8 @@ Returns `400 Bad Request` with `{"error": "..."}` when:
 
 - The pipeline is not found
 - The pipeline does not have a Snowflake destination
-- The SQL fails validation (allowlist, blocklist, semicolons, comments)
+- The query text is longer than 1,000,000 characters
+- The SQL fails validation (allowlist, blocklist, semicolons, chained statements, comments, blocked functions, model and search calls)
 
 ---
 
@@ -282,7 +304,7 @@ POST /api/v1/query/databricks
 |-------|------|----------|---------|-------------|
 | `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a Databricks destination. |
 | `sql` | string | No | `SELECT * FROM {destination table}` | SQL to execute. When omitted, previews the pipeline's destination table. |
-| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited (also disables the query timeout). |
+| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited; the query then runs under a 5-minute time limit instead of 30 seconds. |
 
 ### Example
 
@@ -316,7 +338,13 @@ The `sql` field echoes the query that actually ran, including any automatically 
 
 ### Safety
 
-Same protections as [Query Snowflake](#query-snowflake), with the blocklist extended for Databricks-specific data-movement and maintenance verbs: `OPTIMIZE`, `VACUUM`, `RESTORE`, `CLONE`, `REFRESH`, `MSCK`, and `DECLARE` are also rejected.
+Same query length limit (1,000,000 characters, counted as sent and checked before anything in the query itself), allowlist, semicolon rule, `--` and `/* */` comment rule, `LIMIT` enforcement and time limit (30 seconds; 5 minutes when `limit: -1`) as [Query Snowflake](#query-snowflake), with the statement blocklist (except `UNDROP`, which is Snowflake-only) extended for Databricks-specific data-movement and maintenance verbs: `OPTIMIZE`, `VACUUM`, `RESTORE`, `CLONE`, `REFRESH`, `MSCK`, and `DECLARE` are also rejected.
+
+A query that calls one of these functions is rejected with the function named (`Query contains blocked function: <name>`): `http_request`, `remote_query`, every `ai_*` function (`ai_query`, `ai_gen` and the rest), `vector_search`, `secret`, `try_secret`, `read_files`, `read_kafka`, `read_kinesis`, `read_pubsub`, `read_pulsar`, `read_statestore`, `read_state_metadata`, `cloud_files_state` (these three read a stream's stored state by path), `list_secrets` (it lists secret scope and key names), `table_changes_by_path` (it reads a change feed by path), `java_method`, `reflect`, `try_reflect`, and `IDENTIFIER(...)`, which can call any function named by a string (this includes `FROM IDENTIFIER('<table>')`; write the table name instead). Only a call is refused (the name followed by `(`), so a column named `secret` or a table named `ai_results` still reads; a column-list alias with one of these names, such as `WITH secret(a) AS (...)`, is refused too, so pick another alias. The check covers string literals too.
+
+A query that reads files by naming a location in place of a table is rejected with `Queries cannot read from a file path; name a table instead` (no part of the path is repeated). That is a two-part name whose second part is quoted (backticks, or double quotes) and whose first part is not itself after a `.`, when either the first part is a file format word (`json`, `csv`, `avro`, `parquet`, `orc`, `binaryFile`, `text`, `delta` or `xml`, bare or backticked, any letter case) and the second part holds `/` or `:`, as in ``csv.`dir/f.csv` ``, or the second part starts with `/` or holds `:/`, whatever the first part, as in ``x.`/Volumes/...` `` or ``x.`s3://...` ``. Spaces on either side of the dot do not change this, and the check covers string literals too. A further `.part` after such a name does not exempt it. Names that are not path-shaped still read (``json.`my table` ``, ``delta.`events` ``). The cost: a real table or column whose backticked name holds `/` or `:`, written two-part behind a qualifier named like a format word (``delta.`a/b` ``, including a table alias named that way), or written two-part with a name that starts with `/` or holds `:/`, is refused; write it as a three-part name (``main.delta.`a/b` ``), which still reads, or pick another alias. The same shape is refused wherever it stands, not only as a table: a step into a JSON or semi-structured column named like a format word (``raw:json.`a/b` ``) is refused, and the three-part form does not apply there, so read that step with bracket access instead (``raw:json['a/b']``). A double-quoted part that holds a backslash is refused as both a format word and a path, since its escapes are not decoded (``t."a\nb"``).
+
+Databricks has no read-only session. The query runs as the pipeline's credentials identity, so the blocklists are a second line and that identity's grants are the real control. Reads by path are allowed by `READ VOLUME` (on a volume), `READ FILES` (on an external location) and `SELECT ON ANY FILE` (other cloud locations, the DBFS root and mounts; every workspace admin holds it by default); do not grant these to the pipeline's identity beyond what loading needs.
 
 <Note>
 If the SQL warehouse is stopped, opening the connection blocks while it auto-starts — this happens before the 30-second query timeout applies, so the first query after idle time can take longer.
@@ -328,7 +356,8 @@ Returns `400 Bad Request` with `{"error": "..."}` when:
 
 - The pipeline is not found
 - The pipeline does not have a Databricks destination
-- The SQL fails validation (allowlist, blocklist, semicolons, comments)
+- The query text is longer than 1,000,000 characters
+- The SQL fails validation (allowlist, blocklist, semicolons, comments, blocked functions, reads from a file path)
 
 ---
 
@@ -348,7 +377,7 @@ POST /api/v1/query/sqlserver
 |-------|------|----------|---------|-------------|
 | `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a SQL Server destination. |
 | `sql` | string | No | `SELECT * FROM {schema}.{table}` | T-SQL to execute. When omitted, previews the pipeline's destination table. |
-| `limit` | integer | No | 100 | Maximum rows to return. `0` means the default; there is no upper bound. Pass `-1` for unlimited (also disables the query timeout). |
+| `limit` | integer | No | 100 | Maximum rows to return. `0` means the default; there is no upper bound. Pass `-1` for unlimited; the query then runs under a 5-minute time limit instead of 30 seconds. |
 
 ### Example
 
@@ -392,11 +421,16 @@ When SQL Server rejects the wrapper itself (a result column without a name such 
 
 ### Safety
 
+- **Query length** — query text longer than 1,000,000 characters, counted as sent (surrounding spaces included), is rejected with `Query text is too long: <n> characters (the limit is 1000000)`. Only the API key, the request's parameters, the access checks and the `limit` value are checked before it; nothing in the query itself is.
 - **Read-only allowlist** — queries must start with `SELECT` or `WITH`. For metadata, select from `INFORMATION_SCHEMA` views, for example `SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES` or `SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'orders'`.
 - **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `DENY`, `EXEC`, `EXECUTE`, `MERGE`, `INTO` (so `SELECT ... INTO` cannot create a table), `USE`, `BULK`, `OPENROWSET`, `OPENDATASOURCE`, `OPENQUERY`, `DBCC`, `BACKUP`, `RESTORE`, `SHUTDOWN`, `KILL`, `RECONFIGURE`, `WAITFOR`, `DECLARE`, `TRIGGER`, `SETUSER`, `REVERT`, `WRITETEXT` or `UPDATETEXT` are rejected. The check covers the whole statement, string literals included, so `WHERE note = 'please delete'` is rejected too
 - **No stacked queries** — semicolons are not allowed
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
-- **Query timeout** — 30 seconds. Not applied when `limit: -1`.
+- **One statement** — T-SQL needs no semicolon between statements, so the query is scanned and a second statement is refused where it can be recognised: a second `SELECT` that does not follow `UNION`, `UNION ALL`, `EXCEPT` or `INTERSECT` is rejected with `Only one statement is allowed in a query`, as are an unterminated string literal or quoted identifier, parentheses that do not balance, and a number with a word joined to its end (write `1 FROM`, not `1FROM`). Subqueries, CTEs and `CASE ... END` are fine. The scan does not catch every form, which is why the query is also rolled back.
+- **No brace escapes** — an opening curly brace `{` outside string literals and quoted identifiers is rejected, so ODBC/JDBC brace escapes such as `{d '...'}`, `{ts '...'}`, `{fn ...}` and `{oj ...}` do not run. Write the plain T-SQL instead: a date as a string (`'2024-01-31'` or `CAST('2024-01-31' AS date)`), the T-SQL function (`UPPER`, `SYSDATETIME`, `CONCAT`), the join without the braces, `LIKE ... ESCAPE '\'`, and the request's `limit` for a row cap. Braces inside a string literal or quoted identifier, such as `WHERE payload = '{"a": 1}'` or `SELECT [col{1}] FROM t`, are fine, with one exception: the text `{limit ...}` (an opening brace, optional whitespace, the word `limit` and whitespace) is rejected anywhere in the query, even inside a string literal or quoted name, because the driver would rewrite it. Use the request's `limit` instead.
+- **Control-flow and transaction words** — `SET`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `WHILE`, `IF`, `GOTO`, `PRINT`, `RAISERROR`, `CHECKPOINT`, `OPEN`, `CLOSE`, `DEALLOCATE`, `RETURN`, `BREAK`, `CONTINUE`, `READTEXT`, `ADD` and the phrase `NEXT VALUE FOR` (which advances a sequence) are rejected outside string literals and quoted identifiers, so `WHERE note = 'set if while'` and `SELECT [set] FROM t` still run (a column named `add` or `set` needs brackets or double quotes). `OFFSET ... FETCH NEXT ... ROWS ONLY` is fine.
+- **Rolled back** — the query runs in a transaction that is always rolled back, never committed.
+- **Query timeout** — 30 seconds; 5 minutes when `limit: -1`. A cancelled query returns an error and no rows.
 
 ### Error Cases
 
@@ -404,7 +438,8 @@ Returns `400 Bad Request` with `{"error": "..."}` when:
 
 - The pipeline is not found
 - The pipeline does not have a SQL Server destination
-- The SQL fails validation (allowlist, blocklist, semicolons, comments)
+- The query text is longer than 1,000,000 characters
+- The SQL fails validation (allowlist, blocklist, semicolons, comments, a second statement found by the one-statement scan, control-flow and transaction words, brace escapes)
 - SQL Server rejects the query (unknown table or column, ambiguous column, syntax error, permission denied, a value that will not convert)
 - The connection is refused (the message names the auth method and the fix, as for loads)
 

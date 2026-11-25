@@ -440,6 +440,9 @@ services:
       # Largest single upload (MB) /pipeline/upload accepts. Parsed before the
       # API key is checked, so it stays separate from the per-run disk budget.
       DATRIS_MAX_UPLOAD_MB: "${DATRIS_MAX_UPLOAD_MB:-1024}"
+      # Largest result (MB of JSON text) a MongoDB query may return; past it the
+      # query is refused with a message, never cut short. 0 = no ceiling.
+      DATRIS_QUERY_MAX_RESULT_MB: "${DATRIS_QUERY_MAX_RESULT_MB:-32}"
       # Scratch destination: rows inlined on the run status / per page of
       # /pipeline/result, and how many hours a _scratch/ result is kept.
       SCRATCHINLINEROWS: "${SCRATCH_INLINE_ROWS:-200}"

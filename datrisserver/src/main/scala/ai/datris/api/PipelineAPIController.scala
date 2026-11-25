@@ -1666,7 +1666,11 @@ object PipelineAPIController {
       * for a new or changed pgvector schema or table that can never be
       * right. `DestinationTargets.BlankVectorTableRefusal` for a null or
       * blank table, then `DestinationTargets.UnsafeVectorTableRefusal` for a
-      * double quote or NUL in either name or an empty schema. Skipped when
+      * double quote or NUL in either name or an empty schema, then
+      * `DestinationTargets.LongVectorTableRefusal` for a schema or table over
+      * 63 UTF-8 bytes (PostgreSQL would cut it), not when `stored` has the
+      * same table and effective schema (`DestinationTargets.sameVectorTable`:
+      * a null schema is "public"). Skipped when
       * `stored` (the stored config of this name, the live one for a restore;
       * null when there is none) has exactly the same schema and table
       * (`DestinationTargets.sameVectorTableNames`, nulls included): such a
@@ -1679,6 +1683,8 @@ object PipelineAPIController {
         val text =
             if (DestinationTargets.blankVectorTableName(candidate)) Some(DestinationTargets.BlankVectorTableRefusal)
             else if (DestinationTargets.unsafeVectorTableName(candidate)) Some(DestinationTargets.UnsafeVectorTableRefusal)
+            else if (DestinationTargets.longVectorTableName(candidate) && !DestinationTargets.sameVectorTable(candidate, stored))
+                Some(DestinationTargets.LongVectorTableRefusal)
             else None
         text.map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
     }

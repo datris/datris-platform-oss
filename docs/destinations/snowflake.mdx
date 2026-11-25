@@ -73,6 +73,13 @@ DESC USER DATRIS_SVC;
 
 The final `DESC USER` is the success check — a value in the `RSA_PUBLIC_KEY_FP` row confirms the key registered.
 
+Optional hardening: by default Snowflake grants the `SNOWFLAKE.CORTEX_USER` database role and the `USE AI FUNCTIONS` privilege to `PUBLIC`, so `DATRIS_LOADER` can call the Cortex model and search functions, which bill per token and send row values to a hosted model. Datris refuses those calls in `query_snowflake`, but that is a second line; the role's grants are the control. If no role on the account needs them by default, revoke them from `PUBLIC` and grant them back only where needed:
+
+```sql
+REVOKE DATABASE ROLE SNOWFLAKE.CORTEX_USER FROM ROLE PUBLIC;
+REVOKE USE AI FUNCTIONS ON ACCOUNT FROM ROLE PUBLIC;
+```
+
 Tables auto-created by Datris are owned by `DATRIS_LOADER`, so no further table grants are needed. If you manage tables yourself (`manageTableManually: true`), also grant `SELECT, INSERT, UPDATE, DELETE` on those tables to `DATRIS_LOADER` — `MERGE` upserts and truncation need all four.
 
 `TYPE = SERVICE` marks the user as a machine identity: password login is disabled and MFA does not apply, which is exactly what you want for an unattended integration.
@@ -180,7 +187,7 @@ When `keyFields` is empty, the loader uses a straight `COPY INTO` — the fastes
 
 ## Querying from Datris
 
-The Assistant (and any MCP client) can read the destination back with the `query_snowflake` tool — useful for verifying a load landed and for answering questions over the data without leaving Datris. Queries are pipeline-scoped: the tool takes a pipeline name, and the server connects with that pipeline's credentials secret, warehouse, and role. Credentials never leave the server, and only read-only statements are accepted — `SELECT` (with `LIMIT` applied automatically), plus `SHOW` and `DESCRIBE` for discovering databases, schemas, tables, and columns.
+The Assistant (and any MCP client) can read the destination back with the `query_snowflake` tool — useful for verifying a load landed and for answering questions over the data without leaving Datris. Queries are pipeline-scoped: the tool takes a pipeline name, and the server connects with that pipeline's credentials secret, warehouse, and role. Credentials never leave the server, and only read-only statements are accepted, one statement per query (semicolons and the `->>` flow operator are refused) — `SELECT` (with `LIMIT` applied automatically), plus `SHOW` and `DESCRIBE` for discovering databases, schemas, tables, and columns. Every `SYSTEM$` name is refused except the read-only `SYSTEM$TYPEOF`, `SYSTEM$CLUSTERING_INFORMATION` and `SYSTEM$CLUSTERING_DEPTH`; that covers the ones that act (cancel or abort queries and sessions, resume pipes or tasks, wait). `NEXTVAL`, `GETNEXTVAL` and calls to `IDENTIFIER(...)` are refused too. So is a call to a model or a search or agent service: any function whose name begins `AI_`, anything in the `SNOWFLAKE.CORTEX` schema, `CORTEX_SEARCH_BATCH`, `EXECUTE_AI_EVALUATION`, and a method call written with `!` (`<model>!PREDICT(...)`). The check is on the text, string literals, quoted identifiers and `//` comments included, so a CTE or alias beginning `ai_` with a column list, `ai_col (+)`, `DESC FUNCTION` / `DESC PROCEDURE ai_x(...)`, a pattern symbol beginning `ai_` before a group, and a literal, quoted name or comment holding `ai_<word> (`, `cortex_search_batch (`, `execute_ai_evaluation (`, `!<word> (` or `snowflake.cortex.` are refused too; rename the CTE or alias, split literals with `||`, and see [Query Snowflake](/api-reference/query-api#query-snowflake) for the full list and ways round. A query is cancelled after 30 seconds, or 5 minutes with `limit: -1`. The query runs as the pipeline's role, so give that role only the grants it needs.
 
 Queries run on the pipeline's configured warehouse and consume Snowflake compute like any other query. Results are capped at 100 rows by default.
 

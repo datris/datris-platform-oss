@@ -224,4 +224,124 @@ class VectorContainersSpec extends AnyFunSuite {
         assert(keptAnon.contains("public.vc_x"), keptAnon)
         assert(!keptAnon.contains("vc_a"), keptAnon)
     }
+
+    // ------------------------------------------------------------------------
+    // Story: pgvector: two table names that PostgreSQL cuts to the same 63
+    // bytes are treated as one table
+    // (plans/stories/pgvector-long-names-one-table.md), Acceptance,
+    // VectorContainersSpec (extended). The pgvector key compares the schema
+    // and the table as PostgreSQL keeps them: the first 63 UTF-8 bytes, cut
+    // on a character boundary. Other stores are unchanged.
+
+    private val p63 = "v" * 63
+    private val p62 = "v" * 62
+    private val eAcute = "\u00e9"
+    private val eGrave = "\u00e8"
+
+    private def pgKey(table: String, schema: Option[String] = None) = VectorContainers.key("pgvector", table, schema)
+
+    test("two pgvector names equal in their first 63 bytes have the same key; names that differ within 63 bytes do not") {
+        // differ only after byte 63
+        assert(pgKey(p63 + "_one").isDefined)
+        assert(pgKey(p63 + "_one") == pgKey(p63 + "_two"))
+        assert(pgKey(p63 + "_one") == pgKey(p63 + "_one_and_much_longer_still"))
+        // a name of exactly 63 bytes is the table a longer name with that prefix lands in
+        assert(pgKey(p63) == pgKey(p63 + "x"))
+        // a two-byte letter straddling byte 63: PostgreSQL keeps 62 bytes, so
+        // these three are one table
+        assert(pgKey(p62 + eAcute) == pgKey(p62))
+        assert(pgKey(p62 + eAcute) == pgKey(p62 + eGrave))
+        assert(pgKey(p62 + eAcute + "_one") == pgKey(p62 + eGrave + "_two"))
+        // differ within 63 bytes: two tables
+        assert(pgKey(p63) != pgKey(p62 + "w"))
+        assert(pgKey(p62 + "a_one") != pgKey(p62 + "b_one"))
+        assert(pgKey(p62 + "a") != pgKey(p62 + eAcute)) // 63 bytes vs. 62 kept
+        assert(pgKey("docs_one") != pgKey("docs_two"))
+        // letter case still counts after the cut
+        assert(pgKey("V" * 63 + "_one") != pgKey(p63 + "_one"))
+        // the default schema is the same either way
+        assert(pgKey(p63 + "_one", Some("public")) == pgKey(p63 + "_two", None))
+        assert(pgKey(p63 + "_one", Some("public")) != pgKey(p63 + "_two", Some("other")))
+        // short names keep the key they had
+        assert(pgKey("vc_x") == Some(Key("pgvector", "public", "vc_x")))
+        assert(pgKey("vc_x", Some("other")) == Some(Key("pgvector", "other", "vc_x")))
+        assert(pgKey(p63) == Some(Key("pgvector", "public", p63)))
+        // keysOf and namers use the same identity
+        val a = pg("long_a", p63 + "_one", "public")
+        val b = pg("long_b", p63 + "_two", null)
+        val c = pg("long_c", p62 + "w_three", "public")
+        assert(VectorContainers.keysOf(a) == VectorContainers.keysOf(b))
+        assert(VectorContainers.keysOf(a) != VectorContainers.keysOf(c))
+        assert(names(VectorContainers.namers(VectorContainers.keysOf(a).head, Seq(a, b, c))) == Set("long_a", "long_b"))
+    }
+
+    test("a long schema is cut the same way; qdrant, weaviate, milvus and chroma keys are unchanged") {
+        val s63 = "s" * 63
+        assert(pgKey("docs", Some(s63 + "_one")) == pgKey("docs", Some(s63 + "_two")))
+        assert(pgKey("docs", Some(s63)) == pgKey("docs", Some(s63 + "x")))
+        assert(pgKey("docs", Some("s" * 62 + eAcute)) == pgKey("docs", Some("s" * 62)))
+        assert(pgKey("docs", Some("s" * 62 + "a_one")) != pgKey("docs", Some("s" * 62 + "b_one")))
+        // schema and table are each cut on their own
+        assert(pgKey(p63 + "_one", Some(s63 + "_one")) == pgKey(p63 + "_two", Some(s63 + "_two")))
+        assert(pgKey(p63 + "_one", Some(s63 + "_one")) != pgKey(p63 + "_two", Some("s" * 62 + "t")))
+        assert(pgKey(p63, Some("public")) != pgKey(p63, Some(s63)))
+        // the other stores compare the full name as before (they refuse, not cut)
+        for (store <- Seq("qdrant", "milvus", "chroma")) {
+            assert(VectorContainers.key(store, p63 + "_one", None) == Some(Key(store, "", p63 + "_one")), store)
+            assert(VectorContainers.key(store, p63 + "_one", None) != VectorContainers.key(store, p63 + "_two", None), store)
+            assert(VectorContainers.key(store, p62 + eAcute, None) != VectorContainers.key(store, p62, None), store)
+        }
+        val w = VectorContainers.key("weaviate", "V" * 63 + "_One", None)
+        assert(w == Some(Key("weaviate", "", ("v" * 63 + "_one"))))
+        assert(w != VectorContainers.key("weaviate", "V" * 63 + "_Two", None))
+        // a long pgvector name still never collides with another store
+        assert(pgKey(p63 + "_one") != VectorContainers.key("qdrant", p63 + "_one", None))
+    }
+
+    test("saveConflicts reports a new pipeline whose long name collides with a stored one; a stored pair saved unchanged is not a conflict") {
+        val a = pg("long_a", p63 + "_one", "public")
+        val b = pg("long_b", p63 + "_two", "public")
+        val unrelated = pg("short", "docs", "public")
+
+        // a new pipeline whose table PostgreSQL cuts to the stored one's
+        val fresh = VectorContainers.saveConflicts(b, null, Seq(a, unrelated))
+        assert(fresh.size == 1, fresh)
+        assert(names(fresh.head._2) == Set("long_a"))
+        assert(fresh.head._1 == VectorContainers.keysOf(a).head)
+        // the same through a two-byte letter straddling byte 63
+        val straddle = pg("long_s", p62 + eAcute + "_three", null)
+        assert(names(VectorContainers.saveConflicts(straddle, null, Seq(pg("short_62", p62, "public"))).flatMap(_._2)) == Set("short_62"))
+        // a changed container onto the cut table
+        val movedFrom = pg("long_b", "mine", "public")
+        val moved = VectorContainers.saveConflicts(b, movedFrom, Seq(a, movedFrom))
+        assert(moved.size == 1 && names(moved.head._2) == Set("long_a"), moved)
+        // a long schema too
+        val sa = pg("schema_a", "docs", "s" * 63 + "_one")
+        val sb = pg("schema_b", "docs", "s" * 63 + "_two")
+        assert(names(VectorContainers.saveConflicts(sb, null, Seq(sa)).flatMap(_._2)) == Set("schema_a"))
+
+        // the stored pair (both already saved before this change) saved unchanged
+        val others = Seq(a, b, unrelated)
+        assert(VectorContainers.saveConflicts(b, b, others).isEmpty)
+        assert(VectorContainers.saveConflicts(a, a, others).isEmpty)
+        val edited = p("long_b", Destination(pgvector = PGVectorConfig(p63 + "_two", "public", ChunkingConfig(chunkSize = 900), null, null, null)))
+        assert(VectorContainers.saveConflicts(edited, b, others).isEmpty)
+        // stored with a null schema, candidate says public: still unchanged
+        assert(VectorContainers.saveConflicts(b, pg("long_b", p63 + "_two", null), others).isEmpty)
+
+        // names that differ within 63 bytes do not conflict
+        assert(VectorContainers.saveConflicts(pg("long_c", p62 + "w_x", "public"), null, others).isEmpty)
+    }
+
+    test("search visibility sees every pipeline whose pgvector name PostgreSQL cuts to the searched table") {
+        // Goal / Step 3 of the story (VectorSearchUtility goes through VectorContainers.key)
+        val a = pg("long_a", p63 + "_one", "public")
+        val b = pg("long_b", p63 + "_two", "public")
+        val c = pg("long_c", p62 + "w_three", "public")
+        val configs = Seq(a, b, c)
+        for (t <- Seq(p63 + "_one", p63 + "_two", p63, p63 + "_anything"))
+            assert(names(VectorSearchRegistry.pipelinesForContainer("pgvector", t, configs)) == Set("long_a", "long_b"), t)
+        assert(names(VectorSearchRegistry.pipelinesForContainer("pgvector", p62 + "w_three", configs)) == Set("long_c"))
+        assert(names(VectorSearchRegistry.pipelinesForContainer("pgvector", p63 + "_one", configs, schema = Some("other"))).isEmpty)
+    }
 }
